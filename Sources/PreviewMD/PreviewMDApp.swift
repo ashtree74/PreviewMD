@@ -7,7 +7,7 @@ struct PreviewMDApp: App {
     @StateObject private var state = AppState()
 
     var body: some Scene {
-        Window("PreviewMD", id: "main") {
+        Window("PreviewMD", id: MainWindow.id) {
             WorkspaceView()
                 .environmentObject(state)
                 .previewWindowAppearance(state.theme)
@@ -45,6 +45,23 @@ struct PreviewMDApp: App {
 
 enum AboutWindow {
     static let id = "about"
+}
+
+enum MainWindow {
+    static let id = "main"
+}
+
+@MainActor
+enum MainWindowActions {
+    static func createDocument(
+        in state: AppState,
+        openMainWindow: () -> Void,
+        activateApplication: () -> Void
+    ) {
+        state.newDocument()
+        openMainWindow()
+        activateApplication()
+    }
 }
 
 @MainActor
@@ -154,7 +171,11 @@ struct PreviewMDCommands: Commands {
 
         CommandGroup(replacing: .newItem) {
             Button("New Markdown") {
-                state.newDocument()
+                MainWindowActions.createDocument(
+                    in: state,
+                    openMainWindow: { openWindow(id: MainWindow.id) },
+                    activateApplication: { NSApp.activate(ignoringOtherApps: true) }
+                )
             }
             .keyboardShortcut("n")
 

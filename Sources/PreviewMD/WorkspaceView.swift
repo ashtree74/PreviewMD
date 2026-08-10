@@ -1718,6 +1718,16 @@ private struct DocumentTabBar: View {
     }
 }
 
+struct DocumentTabAccessoryState: Equatable {
+    let showsDirtyIndicator: Bool
+    let showsCloseButton: Bool
+
+    init(isDirty: Bool, isSelected: Bool, isHovering: Bool) {
+        showsDirtyIndicator = isDirty
+        showsCloseButton = isSelected || isHovering
+    }
+}
+
 private struct TabButton: View {
     let document: MarkdownDocument
     let isSelected: Bool
@@ -1726,47 +1736,62 @@ private struct TabButton: View {
     @State private var isHovering = false
 
     var body: some View {
-        Button(action: select) {
-            HStack(spacing: 7) {
-                Image(systemName: document.isSample ? "sparkles" : "doc.text")
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+        let accessory = DocumentTabAccessoryState(
+            isDirty: document.isDirty,
+            isSelected: isSelected,
+            isHovering: isHovering
+        )
 
-                Text(document.title)
-                    .font(.system(size: 12.5, weight: isSelected ? .medium : .regular))
-                    .lineLimit(1)
-                    .frame(maxWidth: 150)
+        HStack(spacing: 7) {
+            Button(action: select) {
+                HStack(spacing: 7) {
+                    Image(systemName: document.isSample ? "sparkles" : "doc.text")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(isSelected ? Color.accentColor : .secondary)
 
-                if document.isDirty {
-                    Circle()
-                        .fill(.secondary)
-                        .frame(width: 6, height: 6)
-                } else if isHovering || isSelected {
-                    Button(action: close) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 9, weight: .bold))
-                            .frame(width: 14, height: 14)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.tertiary)
+                    Text(document.title)
+                        .font(.system(size: 12.5, weight: isSelected ? .medium : .regular))
+                        .lineLimit(1)
+                        .frame(maxWidth: 150)
                 }
+                .padding(.leading, 10)
+                .frame(height: 29)
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 10)
-            .frame(height: 29)
-            .contentShape(RoundedRectangle(cornerRadius: 7))
-            .background(
-                isSelected ? Color(nsColor: .controlBackgroundColor) : Color.clear,
-                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-            )
-            .overlay {
-                if isSelected {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .strokeBorder(.quaternary, lineWidth: 0.5)
+            .buttonStyle(.plain)
+
+            if accessory.showsDirtyIndicator {
+                Circle()
+                    .fill(.secondary)
+                    .frame(width: 6, height: 6)
+                    .accessibilityLabel("Unsaved changes")
+            }
+
+            if accessory.showsCloseButton {
+                Button(action: close) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .frame(width: 14, height: 14)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .foregroundStyle(.tertiary)
+                .accessibilityLabel("Close \(document.title)")
             }
         }
-        .buttonStyle(.plain)
+        .padding(.trailing, 7)
+        .frame(height: 29)
+        .contentShape(RoundedRectangle(cornerRadius: 7))
+        .background(
+            isSelected ? Color(nsColor: .controlBackgroundColor) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+        )
+        .overlay {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(.quaternary, lineWidth: 0.5)
+            }
+        }
         .onHover { isHovering = $0 }
         .contextMenu {
             Button("Close Tab", action: close)

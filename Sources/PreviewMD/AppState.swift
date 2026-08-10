@@ -3,6 +3,12 @@ import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
 
+enum TabCloseDecision {
+    case save
+    case cancel
+    case discard
+}
+
 @MainActor
 final class AppState: ObservableObject {
     @Published var documents: [MarkdownDocument] = []
@@ -56,14 +62,19 @@ final class AppState: ObservableObject {
     private var lastWorkspaceLiveRefresh = Date.distantPast
     private var workspaceSearchRequestID = UUID()
     private var workspaceSearchTask: Task<Void, Never>?
+    private let closeTabDecision: (MarkdownDocument) -> TabCloseDecision
 
     /// Restored when focus mode ends, so entering it to read does not quietly
     /// throw away the split/source view or inspector you were working with.
     private var displayModeBeforeFocus: DisplayMode?
     private var inspectorVisibilityBeforeFocus: Bool?
 
-    init(defaults: UserDefaults = .standard) {
+    init(
+        defaults: UserDefaults = .standard,
+        closeTabDecision: ((MarkdownDocument) -> TabCloseDecision)? = nil
+    ) {
         self.defaults = defaults
+        self.closeTabDecision = closeTabDecision ?? Self.promptForTabClose
         loadPreferences()
         loadRecentDocuments()
         startLiveReloadPolling()
@@ -561,27 +572,41 @@ final class AppState: ObservableObject {
         let document = documents[index]
 
         if document.isDirty {
-            let alert = NSAlert()
-            alert.messageText = "Save changes to “\(document.title)”?"
-            alert.informativeText = "Your changes will be lost if you close this tab without saving."
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "Save")
-            alert.addButton(withTitle: "Cancel")
-            alert.addButton(withTitle: "Don’t Save")
-            let response = alert.runModal()
-            if response == .alertFirstButtonReturn {
+            switch closeTabDecision(document) {
+            case .save:
                 selectedDocumentID = id
                 saveCurrent { [weak self] saved in
                     guard saved else { return }
                     self?.removeTab(id)
                 }
                 return
-            } else if response == .alertSecondButtonReturn {
+            case .cancel:
                 return
+            case .discard:
+                break
             }
         }
 
         removeTab(id)
+    }
+
+    private static func promptForTabClose(_ document: MarkdownDocument) -> TabCloseDecision {
+        let alert = NSAlert()
+        alert.messageText = "Save changes to “\(document.title)”?"
+        alert.informativeText = "Your changes will be lost if you close this tab without saving."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Don’t Save")
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            return .save
+        case .alertThirdButtonReturn:
+            return .discard
+        default:
+            return .cancel
+        }
     }
 
     private func removeTab(_ id: UUID) {

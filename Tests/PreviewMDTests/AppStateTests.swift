@@ -54,6 +54,51 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(state.sidebarSelection, "")
     }
 
+    func testEditedShowcaseCanCloseWithoutSaving() throws {
+        var promptedDocument: MarkdownDocument?
+        let state = try makeState { document in
+            promptedDocument = document
+            return .discard
+        }
+        state.openWelcome()
+        let document = try XCTUnwrap(state.currentDocument)
+        state.updateContent(document.content + "\nEdited", for: document.id)
+
+        state.closeTab(document.id)
+
+        XCTAssertEqual(promptedDocument?.id, document.id)
+        XCTAssertTrue(promptedDocument?.isDirty == true)
+        XCTAssertTrue(state.documents.isEmpty)
+        XCTAssertNil(state.currentDocument)
+    }
+
+    func testDirtySelectedTabShowsBothStatusAndCloseControl() {
+        let accessory = DocumentTabAccessoryState(
+            isDirty: true,
+            isSelected: true,
+            isHovering: false
+        )
+
+        XCTAssertTrue(accessory.showsDirtyIndicator)
+        XCTAssertTrue(accessory.showsCloseButton)
+    }
+
+    func testNewDocumentCommandCreatesDocumentAndReopensMainWindow() throws {
+        let state = try makeState()
+        var didOpenMainWindow = false
+        var didActivateApplication = false
+
+        MainWindowActions.createDocument(
+            in: state,
+            openMainWindow: { didOpenMainWindow = true },
+            activateApplication: { didActivateApplication = true }
+        )
+
+        XCTAssertEqual(state.currentDocument?.title, "Untitled")
+        XCTAssertTrue(didOpenMainWindow)
+        XCTAssertTrue(didActivateApplication)
+    }
+
     func testPaperCanvasDefaultsToHidden() throws {
         let state = try makeState()
 
@@ -655,11 +700,13 @@ final class AppStateTests: XCTestCase {
         XCTAssertFalse(state.isInspectorVisible, "the empty workspace must not retain an inspector")
     }
 
-    private func makeState() throws -> AppState {
+    private func makeState(
+        closeTabDecision: ((MarkdownDocument) -> TabCloseDecision)? = nil
+    ) throws -> AppState {
         let suiteName = "PreviewMDTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
-        return AppState(defaults: defaults)
+        return AppState(defaults: defaults, closeTabDecision: closeTabDecision)
     }
 }
 #endif
