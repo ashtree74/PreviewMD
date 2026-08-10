@@ -731,6 +731,10 @@ tbody tr {
   transition: background 100ms ease;
 }
 
+tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--line) 34%, var(--page));
+}
+
 tbody tr:hover {
   background: color-mix(in srgb, var(--accent) 3.5%, var(--page));
 }

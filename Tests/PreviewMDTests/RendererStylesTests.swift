@@ -56,6 +56,13 @@ final class RendererStylesTests: XCTestCase {
         XCTAssertTrue(cellsRule.contains("word-break: normal;"))
     }
 
+    func testTablesUseThemeAwareAlternatingRowBackgrounds() throws {
+        let css = try rendererCSS()
+        let stripedRowRule = try declarations(after: "tbody tr:nth-child(even)", in: css)
+
+        XCTAssertTrue(stripedRowRule.contains("color-mix(in srgb, var(--line) 34%, var(--page))"))
+    }
+
     func testFluidWidthTracksTheWindowInsteadOfPixelPreset() throws {
         let css = try rendererCSS()
         let rule = try declarations(
