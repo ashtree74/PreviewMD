@@ -66,6 +66,12 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(state.readingStyle, .modern)
     }
 
+    func testPreviewThemeControlsTheNativeInterfaceAppearance() {
+        XCTAssertNil(PreviewTheme.system.preferredColorScheme)
+        XCTAssertEqual(PreviewTheme.light.preferredColorScheme, .light)
+        XCTAssertEqual(PreviewTheme.dark.preferredColorScheme, .dark)
+    }
+
     func testReadingStylePersists() throws {
         let suiteName = "PreviewMDTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

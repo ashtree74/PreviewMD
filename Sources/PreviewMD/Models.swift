@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 import UniformTypeIdentifiers
 
 enum MarkdownFileSupport {
@@ -95,6 +96,16 @@ enum PreviewTheme: String, CaseIterable, Identifiable {
         case .system: "circle.lefthalf.filled"
         case .light: "sun.max"
         case .dark: "moon"
+        }
+    }
+
+    /// Applies the reading theme to the native window as well. `nil` leaves
+    /// the appearance under macOS control and continues to follow the system.
+    var preferredColorScheme: ColorScheme? {
+        switch self {
+        case .system: nil
+        case .light: .light
+        case .dark: .dark
         }
     }
 }
