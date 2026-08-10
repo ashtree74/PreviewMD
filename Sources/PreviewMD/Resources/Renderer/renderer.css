@@ -238,6 +238,21 @@ body {
   text-decoration: underline #c08700 1px;
 }
 
+::highlight(split-sync-selection) {
+  color: inherit;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.split-sync-caret {
+  position: fixed;
+  z-index: 90;
+  width: 2px;
+  min-height: 14px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--accent) 88%, transparent);
+  pointer-events: none;
+}
+
 h1,
 h2,
 h3,

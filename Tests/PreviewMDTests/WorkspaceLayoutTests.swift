@@ -106,7 +106,8 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertTrue(sourceEditor.contains("hasHorizontalScroller = false"))
         XCTAssertTrue(sourceEditor.contains("widthTracksTextView = true"))
         XCTAssertTrue(sourceEditor.contains("NSRegularExpression"))
-        XCTAssertTrue(sourceEditor.contains("hasVerticalRuler = true"))
+        XCTAssertTrue(sourceEditor.contains("MarkdownSourceContainerView"))
+        XCTAssertTrue(sourceEditor.contains("gutterRect(intersecting:"))
         XCTAssertTrue(sourceEditor.contains("MarkdownLineNumberRulerView"))
     }
 

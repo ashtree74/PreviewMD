@@ -432,6 +432,8 @@ struct MarkdownWebView: NSViewRepresentable {
     let externalChangeSelection: Int?
     let topInset: Double
     let controller: RendererController
+    let splitSynchronizer: SplitEditorSynchronizer
+    let isSplitSynchronizationEnabled: Bool
     let onContentChange: (UUID, String, Bool) -> Void
     let onDropFiles: ([URL]) -> Void
     let onDropTargeted: (Bool) -> Void
@@ -444,7 +446,9 @@ struct MarkdownWebView: NSViewRepresentable {
             documentID: documentID,
             documentURL: documentURL,
             openMarkdown: state.open(url:),
-            onContentChange: onContentChange
+            onContentChange: onContentChange,
+            splitSynchronizer: splitSynchronizer,
+            isSplitSynchronizationEnabled: isSplitSynchronizationEnabled
         )
     }
 
@@ -477,6 +481,7 @@ struct MarkdownWebView: NSViewRepresentable {
         configuration.userContentController.add(context.coordinator, name: "copyText")
         configuration.userContentController.add(context.coordinator, name: "editorChange")
         configuration.userContentController.add(context.coordinator, name: "pickImage")
+        configuration.userContentController.add(context.coordinator, name: "splitSync")
         configuration.setURLSchemeHandler(
             context.coordinator.localImageSchemeHandler,
             forURLScheme: LocalImageSchemeHandler.scheme
@@ -490,6 +495,10 @@ struct MarkdownWebView: NSViewRepresentable {
         webView.onDropFiles = onDropFiles
         webView.onDropTargeted = onDropTargeted
         context.coordinator.webView = webView
+        splitSynchronizer.attachPreview(
+            context.coordinator,
+            documentID: documentID
+        )
         controller.attach(webView, documentID: documentID)
         let initialPayload = renderPayload
         webView.pageZoom = initialPayload.zoom
@@ -508,6 +517,10 @@ struct MarkdownWebView: NSViewRepresentable {
         context.coordinator.localImageSchemeHandler.updateBaseURL(baseURL)
         context.coordinator.openMarkdown = state.open(url:)
         context.coordinator.onContentChange = onContentChange
+        context.coordinator.updateSynchronization(
+            splitSynchronizer: splitSynchronizer,
+            isEnabled: isSplitSynchronizationEnabled
+        )
         if let dropWebView = webView as? MarkdownDropWebView {
             dropWebView.onDropFiles = onDropFiles
             dropWebView.onDropTargeted = onDropTargeted
@@ -530,6 +543,8 @@ struct MarkdownWebView: NSViewRepresentable {
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "copyText")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "editorChange")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "pickImage")
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "splitSync")
+        coordinator.splitSynchronizer?.detachPreview(coordinator)
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
         if let dropWebView = webView as? MarkdownDropWebView {
@@ -647,12 +662,19 @@ struct MarkdownWebView: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler, WKUIDelegate {
+    final class Coordinator: NSObject,
+        WKNavigationDelegate,
+        WKScriptMessageHandler,
+        WKUIDelegate,
+        SplitPreviewSynchronizationEndpoint
+    {
         weak var webView: WKWebView?
         var documentID: UUID
         var documentURL: URL?
         var openMarkdown: (URL) -> Void
         var onContentChange: (UUID, String, Bool) -> Void
+        weak var splitSynchronizer: SplitEditorSynchronizer?
+        var isSplitSynchronizationEnabled: Bool
         var basePath = ""
         let localImageSchemeHandler: LocalImageSchemeHandler
 
@@ -666,17 +688,41 @@ struct MarkdownWebView: NSViewRepresentable {
             documentID: UUID,
             documentURL: URL?,
             openMarkdown: @escaping (URL) -> Void,
-            onContentChange: @escaping (UUID, String, Bool) -> Void
+            onContentChange: @escaping (UUID, String, Bool) -> Void,
+            splitSynchronizer: SplitEditorSynchronizer,
+            isSplitSynchronizationEnabled: Bool
         ) {
             self.documentID = documentID
             self.documentURL = documentURL
             self.openMarkdown = openMarkdown
             self.onContentChange = onContentChange
+            self.splitSynchronizer = splitSynchronizer
+            self.isSplitSynchronizationEnabled = isSplitSynchronizationEnabled
             self.localImageSchemeHandler = LocalImageSchemeHandler(
                 baseURL: documentURL?.deletingLastPathComponent()
                     ?? Bundle.module.resourceURL
                     ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             )
+        }
+
+        func updateSynchronization(
+            splitSynchronizer: SplitEditorSynchronizer,
+            isEnabled: Bool
+        ) {
+            let wasEnabled = isSplitSynchronizationEnabled
+            if let previous = self.splitSynchronizer,
+               previous !== splitSynchronizer {
+                previous.detachPreview(self)
+            }
+            self.splitSynchronizer = splitSynchronizer
+            isSplitSynchronizationEnabled = isEnabled
+            if wasEnabled && !isEnabled, isLoaded {
+                webView?.evaluateJavaScript(
+                    "window.previewmdClearSplitSynchronization && "
+                        + "window.previewmdClearSplitSynchronization();"
+                )
+            }
+            splitSynchronizer.attachPreview(self, documentID: documentID)
         }
 
         func loadShell(
@@ -783,10 +829,65 @@ struct MarkdownWebView: NSViewRepresentable {
                 case "pickImage":
                     guard let webView else { return }
                     presentImagePicker(in: webView)
+                case "splitSync":
+                    receiveSplitSyncMessage(message.body)
                 default:
                     break
                 }
             }
+        }
+
+        private func receiveSplitSyncMessage(_ messageBody: Any) {
+            guard isSplitSynchronizationEnabled,
+                  let body = messageBody as? [String: Any],
+                  let kind = body["kind"] as? String else { return }
+            switch kind {
+            case "scroll":
+                guard let line = Self.number(body["sourceLine"]) else { return }
+                splitSynchronizer?.previewDidScroll(
+                    SplitEditorScrollPosition(sourceLine: line),
+                    documentID: documentID
+                )
+            case "selection":
+                guard let startValue = Self.number(body["start"]),
+                      let endValue = Self.number(body["end"]) else { return }
+                let start = max(0, Int(startValue))
+                let end = max(start, Int(endValue))
+                splitSynchronizer?.previewDidChangeSelection(
+                    SplitEditorSelection(
+                        range: NSRange(location: start, length: end - start)
+                    ),
+                    documentID: documentID
+                )
+            case "ready":
+                splitSynchronizer?.previewDidBecomeReady(documentID: documentID)
+            default:
+                break
+            }
+        }
+
+        func applySourceScrollPosition(_ position: SplitEditorScrollPosition) {
+            guard isSplitSynchronizationEnabled, isLoaded, let webView else { return }
+            webView.evaluateJavaScript(
+                "window.previewmdApplySplitScrollPosition && "
+                    + "window.previewmdApplySplitScrollPosition({sourceLine: "
+                    + String(position.sourceLine)
+                    + "});"
+            )
+        }
+
+        func applySourceSelection(_ selection: SplitEditorSelection) {
+            guard isSplitSynchronizationEnabled, isLoaded, let webView else { return }
+            let start = selection.range.location
+            let end = NSMaxRange(selection.range)
+            webView.evaluateJavaScript(
+                "window.previewmdApplySplitSelection && "
+                    + "window.previewmdApplySplitSelection({start: \(start), end: \(end)});"
+            )
+        }
+
+        private static func number(_ value: Any?) -> Double? {
+            (value as? NSNumber)?.doubleValue
         }
 
         private func presentImagePicker(in webView: WKWebView) {

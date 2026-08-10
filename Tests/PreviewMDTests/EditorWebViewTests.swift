@@ -486,6 +486,313 @@ final class EditorWebViewTests: XCTestCase, WKNavigationDelegate {
         XCTAssertTrue(serialized.contains("| Beta | 2 |"))
     }
 
+    func testReturnContinuesTaskListWithAnUncheckedItem() async throws {
+        let webView = try await makeEditor(markdown: "- [x] Finished\n")
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const article = document.querySelector("#preview-document");
+            const item = article.querySelector("li");
+            const text = Array.from(item.childNodes).find(
+              (node) => node.nodeType === Node.TEXT_NODE
+            );
+            const range = document.createRange();
+            range.setStart(text, text.nodeValue.length);
+            range.collapse(true);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            article.focus();
+
+            const event = new KeyboardEvent("keydown", {
+              key: "Enter",
+              bubbles: true,
+              cancelable: true,
+            });
+            article.dispatchEvent(event);
+            return {
+              prevented: event.defaultPrevented,
+              checked: Array.from(
+                article.querySelectorAll('input[type="checkbox"]')
+              ).map((checkbox) => checkbox.checked),
+              markdown: window.previewmdFlushEditor(),
+            };
+            """,
+            contentWorld: .page
+        )
+        let response = try XCTUnwrap(result as? [String: Any])
+
+        XCTAssertEqual(response["prevented"] as? Bool, true)
+        XCTAssertEqual(response["checked"] as? [Bool], [true, false])
+        XCTAssertEqual(
+            response["markdown"] as? String,
+            "- [x] Finished\n- [ ]\n"
+        )
+    }
+
+    func testPasteUsesPlainTextWithoutClipboardStyles() async throws {
+        let webView = try await makeEditor(markdown: "Keep: here\n")
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const article = document.querySelector("#preview-document");
+            const paragraph = article.querySelector("p");
+            const text = paragraph.firstChild;
+            const start = text.nodeValue.indexOf("here");
+            const range = document.createRange();
+            range.setStart(text, start);
+            range.setEnd(text, start + "here".length);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            article.focus();
+
+            const event = new Event("paste", {
+              bubbles: true,
+              cancelable: true,
+            });
+            Object.defineProperty(event, "clipboardData", {
+              value: {
+                getData(type) {
+                  if (type === "text/plain") return "visible";
+                  if (type === "text/html") {
+                    return '<span style="color: white">visible</span>';
+                  }
+                  return "";
+                },
+              },
+            });
+            article.dispatchEvent(event);
+            return {
+              prevented: event.defaultPrevented,
+              styledNodes: article.querySelectorAll("[style]").length,
+              markdown: window.previewmdFlushEditor(),
+            };
+            """,
+            contentWorld: .page
+        )
+        let response = try XCTUnwrap(result as? [String: Any])
+
+        XCTAssertEqual(response["prevented"] as? Bool, true)
+        XCTAssertEqual(response["styledNodes"] as? Int, 0)
+        XCTAssertEqual(response["markdown"] as? String, "Keep: visible\n")
+    }
+
+    func testSplitSyncMapsSelectionsBetweenSourceAndRenderedText() async throws {
+        let markdown = """
+        # Title
+
+        Alpha **bold** omega.
+
+        - [ ] Task
+        """
+        let webView = try await makeEditor(markdown: markdown)
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const source = options.markdown;
+            const boldStart = source.indexOf("bold");
+            const applied = window.previewmdApplySplitSelection
+              ? window.previewmdApplySplitSelection({
+                  start: boldStart,
+                  end: boldStart + "bold".length,
+                })
+              : false;
+            const sourceToPreview = window.getSelection().toString();
+            const counterpartHighlight = CSS.highlights.has(
+              "split-sync-selection"
+            );
+            window.previewmdApplySplitSelection({
+              start: source.indexOf("omega"),
+              end: source.indexOf("omega"),
+            });
+            const counterpartCaretVisible = !document.querySelector(
+              ".split-sync-caret"
+            ).hidden;
+
+            const paragraph = Array.from(
+              document.querySelectorAll("#preview-document p")
+            ).find((node) => node.textContent.includes("omega"));
+            const text = Array.from(paragraph.childNodes).find(
+              (node) =>
+                node.nodeType === Node.TEXT_NODE &&
+                node.nodeValue.includes("omega")
+            );
+            const localStart = text.nodeValue.indexOf("omega");
+            const range = document.createRange();
+            range.setStart(text, localStart);
+            range.setEnd(text, localStart + "omega".length);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            const previewToSource = window.previewmdCurrentSplitSelection
+              ? window.previewmdCurrentSplitSelection()
+              : null;
+
+            return {
+              applied,
+              sourceToPreview,
+              counterpartHighlight,
+              counterpartCaretVisible,
+              previewToSource,
+              mappedBlocks: document.querySelectorAll(
+                "#preview-document [data-previewmd-source-start]"
+              ).length,
+            };
+            """,
+            arguments: ["options": ["markdown": markdown]],
+            contentWorld: .page
+        )
+        let response = try XCTUnwrap(result as? [String: Any])
+        let mapped = try XCTUnwrap(response["previewToSource"] as? [String: Any])
+        let omegaRange = (markdown as NSString).range(of: "omega")
+
+        XCTAssertEqual(response["applied"] as? Bool, true)
+        XCTAssertEqual(response["sourceToPreview"] as? String, "bold")
+        XCTAssertEqual(response["counterpartHighlight"] as? Bool, true)
+        XCTAssertEqual(response["counterpartCaretVisible"] as? Bool, true)
+        XCTAssertGreaterThan(response["mappedBlocks"] as? Int ?? 0, 0)
+        XCTAssertEqual(mapped["start"] as? Int, omegaRange.location)
+        XCTAssertEqual(mapped["end"] as? Int, NSMaxRange(omegaRange))
+    }
+
+    func testSplitSyncScrollsPreviewToTheMatchingSourceLine() async throws {
+        let markdown = (0..<80)
+            .map { index in
+                "## Section \(index)\n\nParagraph \(index) with enough text to render."
+            }
+            .joined(separator: "\n\n")
+        let targetMarker = "## Section 55"
+        let markerRange = (markdown as NSString).range(of: targetMarker)
+        let targetLine = (markdown as NSString)
+            .substring(to: markerRange.location)
+            .filter { $0 == "\n" }
+            .count
+        let webView = try await makeEditor(markdown: markdown)
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const applied = window.previewmdApplySplitScrollPosition({
+              sourceLine: targetLine,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            return {
+              applied,
+              scrollY: window.scrollY,
+              scrollHeight: document.documentElement.scrollHeight,
+              target: Array.from(document.querySelectorAll(
+                "[data-previewmd-source-start]"
+              )).filter((element) =>
+                Number(element.dataset.previewmdSourceStart) === targetLine
+              ).map((element) => ({
+                tag: element.tagName,
+                top: element.getBoundingClientRect().top,
+                start: element.dataset.previewmdSourceStart,
+                end: element.dataset.previewmdSourceEnd,
+              })),
+              position: window.previewmdCurrentSplitScrollPosition(),
+            };
+            """,
+            arguments: ["targetLine": targetLine],
+            contentWorld: .page
+        )
+        let response = try XCTUnwrap(result as? [String: Any])
+        let position = try XCTUnwrap(response["position"] as? [String: Any])
+        XCTAssertEqual(response["applied"] as? Bool, true)
+        XCTAssertGreaterThan(response["scrollY"] as? Double ?? 0, 100)
+        XCTAssertEqual(
+            position["sourceLine"] as? Double ?? .nan,
+            Double(targetLine),
+            accuracy: 3,
+            String(describing: response)
+        )
+    }
+
+    func testSplitSyncScrollsNestedShowcaseListToTheMatchingLine() async throws {
+        let markdown = ShowcaseDocument.markdown
+        let marker = "- **Work with whole folders.**"
+        let markerRange = (markdown as NSString).range(of: marker)
+        let targetLine = (markdown as NSString)
+            .substring(to: markerRange.location)
+            .filter { $0 == "\n" }
+            .count
+        let webView = try await makeEditor(markdown: markdown)
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const applied = window.previewmdApplySplitScrollPosition({
+              sourceLine: targetLine,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            return {
+              applied,
+              scrollY: window.scrollY,
+              position: window.previewmdCurrentSplitScrollPosition(),
+            };
+            """,
+            arguments: ["targetLine": targetLine],
+            contentWorld: .page
+        )
+        let response = try XCTUnwrap(result as? [String: Any])
+        let position = try XCTUnwrap(response["position"] as? [String: Any])
+        XCTAssertEqual(response["applied"] as? Bool, true)
+        XCTAssertGreaterThan(response["scrollY"] as? Double ?? 0, 100)
+        XCTAssertEqual(
+            position["sourceLine"] as? Double ?? .nan,
+            Double(targetLine),
+            accuracy: 3,
+            String(describing: response)
+        )
+    }
+
+    func testSplitSyncRefreshesOffsetsAfterRichListEditing() async throws {
+        let webView = try await makeEditor(markdown: "- [ ] First\n")
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const article = document.querySelector("#preview-document");
+            const firstItem = article.querySelector("li");
+            const firstText = Array.from(firstItem.childNodes).find(
+              (node) => node.nodeType === Node.TEXT_NODE
+            );
+            const range = document.createRange();
+            range.setStart(firstText, firstText.nodeValue.length);
+            range.collapse(true);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            article.dispatchEvent(
+              new KeyboardEvent("keydown", {
+                key: "Enter",
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+            document.execCommand("insertText", false, "Next");
+            article.dispatchEvent(new InputEvent("input", { bubbles: true }));
+            await new Promise((resolve) => setTimeout(resolve, 20));
+
+            const nextText = Array.from(article.querySelectorAll("li"))[1]
+              .childNodes;
+            const text = Array.from(nextText).find(
+              (node) =>
+                node.nodeType === Node.TEXT_NODE && node.nodeValue.includes("Next")
+            );
+            const nextRange = document.createRange();
+            nextRange.selectNodeContents(text);
+            selection.removeAllRanges();
+            selection.addRange(nextRange);
+            return {
+              markdown: window.previewmdFlushEditor(),
+              position: window.previewmdCurrentSplitSelection(),
+            };
+            """,
+            contentWorld: .page
+        )
+        let response = try XCTUnwrap(result as? [String: Any])
+        let markdown = try XCTUnwrap(response["markdown"] as? String)
+        let position = try XCTUnwrap(response["position"] as? [String: Any])
+        let nextRange = (markdown as NSString).range(of: "Next")
+
+        XCTAssertEqual(markdown, "- [ ] First\n- [ ] Next\n")
+        XCTAssertEqual(position["start"] as? Int, nextRange.location)
+        XCTAssertEqual(position["end"] as? Int, NSMaxRange(nextRange))
+    }
+
     func testLinksImagesAlertsAndNamedFootnotesKeepMarkdownMeaning() async throws {
         let markdown = """
         Read [the guide](guide.md).

@@ -13,6 +13,11 @@
   let selectedObject = null;
   let inserterTarget = null;
   let imagePickerPending = false;
+  let splitSelectionFrame = 0;
+  let splitScrollFrame = 0;
+  let ignoreSplitSelectionUntil = 0;
+  let ignoreSplitScrollUntil = 0;
+  let splitSynchronizedRange = null;
 
   const keyboardObjectSelector =
     ".frontmatter-card, .table-scroll, .code-card, .diagram-card, .katex-display, .katex, img, hr:not(.footnotes-sep)";
@@ -20,6 +25,17 @@
   const textToolbar = makeTextToolbar();
   const objectToolbar = makeObjectToolbar();
   const blockInserter = makeBlockInserter();
+  const splitSyncCaret = makeSplitSyncCaret();
+
+  function makeSplitSyncCaret() {
+    const caret = document.createElement("div");
+    caret.className = "split-sync-caret";
+    caret.setAttribute("aria-hidden", "true");
+    caret.setAttribute("contenteditable", "false");
+    caret.hidden = true;
+    document.body.appendChild(caret);
+    return caret;
+  }
 
   function makeTextToolbar() {
     const toolbar = document.createElement("div");
@@ -1118,9 +1134,13 @@
     savedRange = null;
     inserterTarget = null;
     imagePickerPending = false;
+    clearSplitCounterpartIndicator();
     clearObjectSelection();
     hideBlockInserter();
     setEditable(shouldEdit === true);
+    window.requestAnimationFrame(() => {
+      postSplitSyncMessage({ kind: "ready" });
+    });
   }
 
   function scheduleChange(immediate, historyBoundary) {
@@ -1149,6 +1169,7 @@
     pendingHistoryBoundary = false;
     domChanged = false;
     currentMarkdown = markdown;
+    refreshSplitSourcePositions();
     if (
       window.webkit &&
       window.webkit.messageHandlers &&
@@ -1171,6 +1192,7 @@
       const historyBoundary = pendingHistoryBoundary;
       pendingHistoryBoundary = false;
       currentMarkdown = markdown;
+      refreshSplitSourcePositions();
       if (
         window.webkit &&
         window.webkit.messageHandlers &&
@@ -1991,6 +2013,561 @@
     return true;
   }
 
+  function directTaskCheckbox(item) {
+    return item && item.querySelector(
+      ':scope > input[type="checkbox"], :scope > p > input[type="checkbox"]'
+    );
+  }
+
+  function prepareContinuedTaskItem(item) {
+    let checkbox = directTaskCheckbox(item);
+    if (!checkbox) {
+      checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      const target = item.querySelector(":scope > p") || item;
+      target.insertBefore(checkbox, target.firstChild);
+    }
+    checkbox.checked = false;
+    checkbox.disabled = false;
+    checkbox.setAttribute("aria-label", "Not completed");
+    item.classList.add("task-list-item");
+    item.parentElement && item.parentElement.classList.add("task-list");
+  }
+
+  function handleTaskListReturn(event) {
+    if (
+      event.key !== "Enter" ||
+      event.shiftKey ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.altKey
+    ) {
+      return false;
+    }
+    const selection = window.getSelection();
+    if (!selectionInsideArticle(selection) || !selection.isCollapsed || !selection.rangeCount) {
+      return false;
+    }
+    const anchor =
+      selection.anchorNode.nodeType === Node.TEXT_NODE
+        ? selection.anchorNode.parentElement
+        : selection.anchorNode;
+    const item = anchor && anchor.closest && anchor.closest("li");
+    if (!item || !directTaskCheckbox(item) || listItemTextLength(item) === 0) {
+      return false;
+    }
+
+    event.preventDefault();
+    document.execCommand("insertParagraph", false, null);
+    const nextSelection = window.getSelection();
+    const nextAnchor =
+      nextSelection && nextSelection.anchorNode
+        ? nextSelection.anchorNode.nodeType === Node.TEXT_NODE
+          ? nextSelection.anchorNode.parentElement
+          : nextSelection.anchorNode
+        : null;
+    const nextItem = nextAnchor && nextAnchor.closest && nextAnchor.closest("li");
+    if (nextItem && nextItem !== item) {
+      prepareContinuedTaskItem(nextItem);
+    }
+    scheduleChange(true, true);
+    return true;
+  }
+
+  function insertPlainTextAtSelection(text) {
+    const selection = window.getSelection();
+    if (!selectionInsideArticle(selection) || !selection.rangeCount) return false;
+    const range = selection.getRangeAt(0);
+    range.deleteContents();
+    const node = document.createTextNode(text);
+    range.insertNode(node);
+    range.setStartAfter(node);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return true;
+  }
+
+  function handlePlainTextPaste(event) {
+    if (!editable || !event.clipboardData) return false;
+    const plainText = event.clipboardData.getData("text/plain");
+    const types = event.clipboardData.types
+      ? Array.from(event.clipboardData.types)
+      : [];
+    if (!plainText && types.length && !types.includes("text/plain")) return false;
+
+    event.preventDefault();
+    if (!document.execCommand("insertText", false, plainText)) {
+      insertPlainTextAtSelection(plainText);
+    }
+    scheduleChange(true, true);
+    window.requestAnimationFrame(updateBlockInserter);
+    return true;
+  }
+
+  function postSplitSyncMessage(payload) {
+    try {
+      const handler =
+        window.webkit &&
+        window.webkit.messageHandlers &&
+        window.webkit.messageHandlers.splitSync;
+      handler && handler.postMessage(payload);
+    } catch (_) {}
+  }
+
+  function splitSourceLineOffsets() {
+    const offsets = [0];
+    for (let index = 0; index < currentMarkdown.length; index += 1) {
+      const code = currentMarkdown.charCodeAt(index);
+      if (code === 13) {
+        if (
+          index + 1 < currentMarkdown.length &&
+          currentMarkdown.charCodeAt(index + 1) === 10
+        ) {
+          index += 1;
+        }
+        offsets.push(index + 1);
+      } else if (
+        code === 10 ||
+        code === 0x85 ||
+        code === 0x2028 ||
+        code === 0x2029
+      ) {
+        offsets.push(index + 1);
+      }
+    }
+    return offsets;
+  }
+
+  function splitSourceLineForOffset(offset, lineOffsets) {
+    const normalized = Math.max(
+      0,
+      Math.min(Number(offset) || 0, currentMarkdown.length)
+    );
+    let lower = 0;
+    let upper = lineOffsets.length;
+    while (lower < upper) {
+      const middle = lower + Math.floor((upper - lower) / 2);
+      if (lineOffsets[middle] <= normalized) lower = middle + 1;
+      else upper = middle;
+    }
+    return Math.max(0, lower - 1);
+  }
+
+  function refreshSplitSourcePositions() {
+    article
+      .querySelectorAll(
+        "[data-previewmd-source-start][data-previewmd-source-end]"
+      )
+      .forEach((element) => {
+        delete element.dataset.previewmdSourceStart;
+        delete element.dataset.previewmdSourceEnd;
+      });
+    const lineOffsets = splitSourceLineOffsets();
+    let cursor = 0;
+    Array.from(article.children).forEach((block) => {
+      const source = serializeBlock(block).trimEnd();
+      if (!source) return;
+      const found = currentMarkdown.indexOf(source, cursor);
+      if (found < cursor) return;
+      const sourceEnd = found + source.length;
+      const startLine = splitSourceLineForOffset(found, lineOffsets);
+      const endLine =
+        splitSourceLineForOffset(Math.max(found, sourceEnd - 1), lineOffsets) + 1;
+      block.dataset.previewmdSourceStart = String(startLine);
+      block.dataset.previewmdSourceEnd = String(endLine);
+      cursor = sourceEnd;
+    });
+  }
+
+  function splitSourceBounds(element, lineOffsets) {
+    if (!element) return null;
+    const startLine = Number(element.dataset.previewmdSourceStart);
+    const endLine = Number(element.dataset.previewmdSourceEnd);
+    if (!Number.isFinite(startLine) || !Number.isFinite(endLine)) return null;
+    const start = lineOffsets[Math.max(0, Math.floor(startLine))] ?? 0;
+    const end =
+      lineOffsets[Math.max(0, Math.floor(endLine))] ?? currentMarkdown.length;
+    return { startLine, endLine, start, end };
+  }
+
+  function splitMappedElements() {
+    return Array.from(
+      article.querySelectorAll(
+        "[data-previewmd-source-start][data-previewmd-source-end]"
+      )
+    );
+  }
+
+  function splitTextNodes(element) {
+    const nodes = [];
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, {
+      acceptNode(textNode) {
+        const parent = textNode.parentElement;
+        if (
+          !parent ||
+          parent.closest(
+            ".heading-anchor, .copy-code, .code-toolbar, .diagram-label, " +
+              ".table-expand, .alert-title, .footnote-backref, .editor-object-source"
+          )
+        ) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    return nodes;
+  }
+
+  function splitTextMappings(element, lineOffsets) {
+    const bounds = splitSourceBounds(element, lineOffsets);
+    if (!bounds) return [];
+    let cursor = bounds.start;
+    const mappings = [];
+    splitTextNodes(element).forEach((node) => {
+      const value = node.nodeValue || "";
+      if (!value) return;
+      const found = currentMarkdown.indexOf(value, cursor);
+      if (found < cursor || found + value.length > bounds.end) return;
+      mappings.push({
+        node,
+        sourceStart: found,
+        sourceEnd: found + value.length,
+      });
+      cursor = found + value.length;
+    });
+    return mappings;
+  }
+
+  function splitMappedElementForNode(node) {
+    const element =
+      node && node.nodeType === Node.ELEMENT_NODE
+        ? node
+        : node && node.parentElement;
+    return element && element.closest
+      ? element.closest(
+          "[data-previewmd-source-start][data-previewmd-source-end]"
+        )
+      : null;
+  }
+
+  function splitSourceOffsetForDOMPoint(node, offset, lineOffsets) {
+    const element = splitMappedElementForNode(node);
+    const bounds = splitSourceBounds(element, lineOffsets);
+    if (!element || !bounds) return null;
+    const mappings = splitTextMappings(element, lineOffsets);
+    if (node && node.nodeType === Node.TEXT_NODE) {
+      const mapping = mappings.find((candidate) => candidate.node === node);
+      if (mapping) {
+        return Math.min(
+          mapping.sourceEnd,
+          mapping.sourceStart + Math.max(0, Number(offset) || 0)
+        );
+      }
+    }
+    return bounds.start;
+  }
+
+  function splitDOMPointForSourceOffset(offset, lineOffsets) {
+    const line = splitSourceLineForOffset(offset, lineOffsets);
+    const candidates = splitMappedElements()
+      .map((element) => ({
+        element,
+        bounds: splitSourceBounds(element, lineOffsets),
+      }))
+      .filter(
+        (candidate) =>
+          candidate.bounds &&
+          line >= candidate.bounds.startLine &&
+          line < candidate.bounds.endLine
+      )
+      .sort((left, right) => {
+        const leftSpan = left.bounds.endLine - left.bounds.startLine;
+        const rightSpan = right.bounds.endLine - right.bounds.startLine;
+        if (leftSpan !== rightSpan) return leftSpan - rightSpan;
+        if (left.element.contains(right.element)) return 1;
+        if (right.element.contains(left.element)) return -1;
+        return 0;
+      });
+
+    for (const candidate of candidates) {
+      const mappings = splitTextMappings(candidate.element, lineOffsets);
+      const mapping = mappings.find(
+        (item) => offset >= item.sourceStart && offset <= item.sourceEnd
+      );
+      if (mapping) {
+        return {
+          node: mapping.node,
+          offset: Math.max(
+            0,
+            Math.min(
+              mapping.node.nodeValue.length,
+              offset - mapping.sourceStart
+            )
+          ),
+        };
+      }
+    }
+
+    const fallback = candidates[0];
+    if (!fallback) return null;
+    const mappings = splitTextMappings(fallback.element, lineOffsets);
+    if (mappings.length) {
+      const first = mappings[0];
+      const last = mappings[mappings.length - 1];
+      return offset <= first.sourceStart
+        ? { node: first.node, offset: 0 }
+        : { node: last.node, offset: last.node.nodeValue.length };
+    }
+    return { node: fallback.element, offset: 0 };
+  }
+
+  function currentSplitSelection() {
+    const selection = window.getSelection();
+    if (!selectionInsideArticle(selection) || !selection.rangeCount) return null;
+    const range = selection.getRangeAt(0);
+    const lineOffsets = splitSourceLineOffsets();
+    const anchor = splitSourceOffsetForDOMPoint(
+      range.startContainer,
+      range.startOffset,
+      lineOffsets
+    );
+    const focus = splitSourceOffsetForDOMPoint(
+      range.endContainer,
+      range.endOffset,
+      lineOffsets
+    );
+    if (anchor === null || focus === null) return null;
+    return { start: Math.min(anchor, focus), end: Math.max(anchor, focus) };
+  }
+
+  function clearSplitCounterpartIndicator() {
+    splitSynchronizedRange = null;
+    splitSyncCaret.hidden = true;
+    if (window.CSS && CSS.highlights) {
+      CSS.highlights.delete("split-sync-selection");
+    }
+  }
+
+  function splitCaretRect(range) {
+    const direct = range.getBoundingClientRect();
+    if (direct.height > 0) return direct;
+    const node = range.startContainer;
+    const offset = range.startOffset;
+    if (node && node.nodeType === Node.TEXT_NODE && node.nodeValue.length) {
+      const probe = range.cloneRange();
+      if (offset < node.nodeValue.length) {
+        probe.setEnd(node, offset + 1);
+        const rect = probe.getBoundingClientRect();
+        return {
+          left: rect.left,
+          top: rect.top,
+          height: rect.height,
+        };
+      }
+      if (offset > 0) {
+        probe.setStart(node, offset - 1);
+        const rect = probe.getBoundingClientRect();
+        return {
+          left: rect.right,
+          top: rect.top,
+          height: rect.height,
+        };
+      }
+    }
+    const element =
+      node && node.nodeType === Node.ELEMENT_NODE ? node : node && node.parentElement;
+    const fallback = element ? element.getBoundingClientRect() : direct;
+    return {
+      left: fallback.left,
+      top: fallback.top,
+      height: fallback.height,
+    };
+  }
+
+  function updateSplitCounterpartIndicator() {
+    if (!splitSynchronizedRange) return;
+    if (!splitSynchronizedRange.collapsed) {
+      splitSyncCaret.hidden = true;
+      if (window.CSS && CSS.highlights) {
+        CSS.highlights.set(
+          "split-sync-selection",
+          new Highlight(splitSynchronizedRange)
+        );
+      }
+      return;
+    }
+
+    if (window.CSS && CSS.highlights) {
+      CSS.highlights.delete("split-sync-selection");
+    }
+    const rect = splitCaretRect(splitSynchronizedRange);
+    splitSyncCaret.style.left = Math.round(rect.left) + "px";
+    splitSyncCaret.style.top = Math.round(rect.top) + "px";
+    splitSyncCaret.style.height = Math.max(14, Math.round(rect.height)) + "px";
+    splitSyncCaret.hidden = false;
+  }
+
+  function applySplitSelection(position) {
+    if (!position) return false;
+    const start = Math.max(
+      0,
+      Math.min(Number(position.start) || 0, currentMarkdown.length)
+    );
+    const end = Math.max(
+      start,
+      Math.min(Number(position.end) || start, currentMarkdown.length)
+    );
+    const lineOffsets = splitSourceLineOffsets();
+    const startPoint = splitDOMPointForSourceOffset(start, lineOffsets);
+    const endPoint = splitDOMPointForSourceOffset(end, lineOffsets);
+    if (!startPoint || !endPoint) return false;
+    try {
+      const range = document.createRange();
+      range.setStart(startPoint.node, startPoint.offset);
+      range.setEnd(endPoint.node, endPoint.offset);
+      ignoreSplitSelectionUntil = performance.now() + 120;
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      splitSynchronizedRange = range.cloneRange();
+      updateSplitCounterpartIndicator();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function currentSplitScrollPosition() {
+    const anchorY = Math.min(72, Math.max(24, window.innerHeight * 0.08));
+    const candidates = splitMappedElements()
+      .map((element) => ({
+        element,
+        rect: element.getBoundingClientRect(),
+        startLine: Number(element.dataset.previewmdSourceStart),
+        endLine: Number(element.dataset.previewmdSourceEnd),
+      }))
+      .filter(
+        (candidate) =>
+          candidate.rect.height > 0 &&
+          Number.isFinite(candidate.startLine) &&
+          Number.isFinite(candidate.endLine)
+      );
+    if (!candidates.length) return null;
+    const containing = candidates.filter(
+      (candidate) =>
+        candidate.rect.top <= anchorY && candidate.rect.bottom >= anchorY
+    );
+    const pool = containing.length ? containing : candidates;
+    pool.sort((left, right) => {
+      if (containing.length) {
+        const leftSpan = left.endLine - left.startLine;
+        const rightSpan = right.endLine - right.startLine;
+        if (leftSpan !== rightSpan) return leftSpan - rightSpan;
+      }
+      return (
+        Math.abs(left.rect.top - anchorY) -
+        Math.abs(right.rect.top - anchorY)
+      );
+    });
+    const target = pool[0];
+    const ratio = Math.max(
+      0,
+      Math.min(
+        1,
+        (anchorY - target.rect.top) / Math.max(1, target.rect.height)
+      )
+    );
+    return {
+      sourceLine:
+        target.startLine +
+        ratio * Math.max(1, target.endLine - target.startLine),
+    };
+  }
+
+  function applySplitScrollPosition(position) {
+    const sourceLine = Number(position && position.sourceLine);
+    if (!Number.isFinite(sourceLine)) return false;
+    const candidates = splitMappedElements()
+      .map((element) => ({
+        element,
+        rect: element.getBoundingClientRect(),
+        startLine: Number(element.dataset.previewmdSourceStart),
+        endLine: Number(element.dataset.previewmdSourceEnd),
+      }))
+      .filter(
+        (candidate) =>
+          Number.isFinite(candidate.startLine) &&
+          Number.isFinite(candidate.endLine)
+      );
+    if (!candidates.length) return false;
+    const containing = candidates.filter(
+      (candidate) =>
+        sourceLine >= candidate.startLine && sourceLine < candidate.endLine
+    );
+    const pool = containing.length ? containing : candidates;
+    pool.sort((left, right) => {
+      if (containing.length) {
+        const leftSpan = left.endLine - left.startLine;
+        const rightSpan = right.endLine - right.startLine;
+        if (leftSpan !== rightSpan) return leftSpan - rightSpan;
+      }
+      const leftDistance = Math.min(
+        Math.abs(sourceLine - left.startLine),
+        Math.abs(sourceLine - left.endLine)
+      );
+      const rightDistance = Math.min(
+        Math.abs(sourceLine - right.startLine),
+        Math.abs(sourceLine - right.endLine)
+      );
+      return leftDistance - rightDistance;
+    });
+    const target = pool[0];
+    const span = Math.max(1, target.endLine - target.startLine);
+    const ratio = Math.max(
+      0,
+      Math.min(1, (sourceLine - target.startLine) / span)
+    );
+    const anchorY = Math.min(72, Math.max(24, window.innerHeight * 0.08));
+    const top =
+      window.scrollY +
+      target.rect.top +
+      ratio * target.rect.height -
+      anchorY;
+    ignoreSplitScrollUntil = performance.now() + 120;
+    const previousScrollBehavior = document.documentElement.style.scrollBehavior;
+    document.documentElement.style.scrollBehavior = "auto";
+    window.scrollTo(0, Math.max(0, top));
+    document.documentElement.style.scrollBehavior = previousScrollBehavior;
+    return true;
+  }
+
+  function scheduleSplitSelectionPublication() {
+    if (splitSelectionFrame) return;
+    splitSelectionFrame = window.requestAnimationFrame(() => {
+      splitSelectionFrame = 0;
+      if (performance.now() < ignoreSplitSelectionUntil) return;
+      const position = currentSplitSelection();
+      if (position) {
+        clearSplitCounterpartIndicator();
+        postSplitSyncMessage({ kind: "selection", ...position });
+      }
+    });
+  }
+
+  function scheduleSplitScrollPublication() {
+    if (splitScrollFrame) return;
+    splitScrollFrame = window.requestAnimationFrame(() => {
+      splitScrollFrame = 0;
+      if (performance.now() < ignoreSplitScrollUntil) return;
+      const position = currentSplitScrollPosition();
+      if (position) {
+        postSplitSyncMessage({ kind: "scroll", ...position });
+      }
+    });
+  }
+
   function handleInlineMarkdownTypingShortcut() {
     const selection = window.getSelection();
     if (!selectionInsideArticle(selection) || !selection.isCollapsed || !selection.rangeCount) {
@@ -2049,6 +2626,7 @@
   article.addEventListener("change", (event) => {
     if (event.target.matches('input[type="checkbox"]')) scheduleChange(true, true);
   });
+  article.addEventListener("paste", handlePlainTextPaste);
   article.addEventListener("click", (event) => {
     if (!editable) return;
     const anchor = event.target.closest("a");
@@ -2067,6 +2645,10 @@
   });
   article.addEventListener("keydown", (event) => {
     if (!editable) return;
+    if (handleTaskListReturn(event)) {
+      window.requestAnimationFrame(updateBlockInserter);
+      return;
+    }
     if (handleMarkdownTypingShortcut(event)) {
       window.requestAnimationFrame(updateBlockInserter);
       return;
@@ -2097,6 +2679,7 @@
     window.requestAnimationFrame(updateBlockInserter);
   });
   document.addEventListener("selectionchange", () => {
+    scheduleSplitSelectionPublication();
     window.requestAnimationFrame(() => {
       updateSelectionToolbar();
       updateBlockInserter();
@@ -2105,6 +2688,8 @@
   window.addEventListener(
     "scroll",
     () => {
+      scheduleSplitScrollPublication();
+      updateSplitCounterpartIndicator();
       if (!textToolbar.hidden) updateSelectionToolbar();
       if (!objectToolbar.hidden && selectedObject) {
         positionToolbar(objectToolbar, selectedObject.getBoundingClientRect());
@@ -2132,6 +2717,11 @@
   window.previewmdInsertPickedImage = insertPickedImage;
   window.previewmdCancelPickedImage = cancelPickedImage;
   window.previewmdUpdateBlockInserter = updateBlockInserter;
+  window.previewmdCurrentSplitSelection = currentSplitSelection;
+  window.previewmdApplySplitSelection = applySplitSelection;
+  window.previewmdClearSplitSynchronization = clearSplitCounterpartIndicator;
+  window.previewmdCurrentSplitScrollPosition = currentSplitScrollPosition;
+  window.previewmdApplySplitScrollPosition = applySplitScrollPosition;
   window.previewmdAvailableBlocks = function () {
     return Array.from(
       blockInserter.querySelectorAll("[data-insert-block]"),

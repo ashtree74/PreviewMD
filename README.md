@@ -5,14 +5,14 @@ A native macOS Markdown reader with a print-inspired preview, editing, tabs, out
 ## Highlights
 
 - GitHub Flavored Markdown, tables, task lists, alerts, footnotes, and compact Shields badges
-- Direct rich-text editing in the rendered document, including Markdown typing shortcuts
+- Direct rich-text editing in the rendered document, including Markdown typing shortcuts, task-list continuation, and plain-text paste
 - Frontmatter metadata rendered as an editable card above the document title
 - A contextual selection toolbar for text, links, images, tables, code, diagrams, and math
 - A left-margin `+` menu on empty lines for inserting every supported Markdown block
 - Mermaid diagrams and charts with an optional visual flowchart editor
 - KaTeX inline and display math
 - Syntax highlighting with copy buttons
-- Preview, syntax-colored source, and live split modes with native line wrapping
+- Preview, numbered syntax-colored source, and live split modes with synchronized scrolling, selection, and native line wrapping
 - A focus mode that strips every control except the page and the width ruler
 - Tabs, recent files, pinning, drag and drop, local images and relative links
 - Automatic disk updates for files changed by external editors, with protection for unsaved work

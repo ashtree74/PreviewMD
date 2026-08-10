@@ -1783,6 +1783,7 @@ private struct TabButton: View {
 
 private struct DocumentWorkspace: View {
     @EnvironmentObject private var state: AppState
+    @StateObject private var splitSynchronizer = SplitEditorSynchronizer()
     @State private var sourceColumnWidth: CGFloat = 420
     @State private var splitDragStartWidth: CGFloat?
     let document: MarkdownDocument
@@ -1809,7 +1810,11 @@ private struct DocumentWorkspace: View {
                 HStack(spacing: 0) {
                     // Both editors stay in this stable order. Changing display
                     // mode only changes their frames, never their identity.
-                    SourceEditor()
+                    SourceEditor(
+                        documentID: document.id,
+                        splitSynchronizer: splitSynchronizer,
+                        isSplitSynchronizationEnabled: isSplit
+                    )
                         .frame(width: visibleSourceWidth)
                         .opacity(visibleSourceWidth > 0 ? 1 : 0)
                         .allowsHitTesting(visibleSourceWidth > 0)
@@ -1840,7 +1845,11 @@ private struct DocumentWorkspace: View {
                                 }
                         )
 
-                    PreviewPane(document: document)
+                    PreviewPane(
+                        document: document,
+                        splitSynchronizer: splitSynchronizer,
+                        isSplitSynchronizationEnabled: isSplit
+                    )
                         .frame(width: previewWidth)
                         .opacity(isSourceOnly ? 0 : 1)
                         .allowsHitTesting(!isSourceOnly)
@@ -1899,6 +1908,8 @@ private struct PreviewPane: View {
     @EnvironmentObject private var state: AppState
     @State private var isDropTargeted = false
     let document: MarkdownDocument
+    let splitSynchronizer: SplitEditorSynchronizer
+    let isSplitSynchronizationEnabled: Bool
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -1925,6 +1936,8 @@ private struct PreviewPane: View {
                     : nil,
                 topInset: state.isFocusMode ? FocusMetrics.toolbarHeight : 0,
                 controller: state.rendererController,
+                splitSynchronizer: splitSynchronizer,
+                isSplitSynchronizationEnabled: isSplitSynchronizationEnabled,
                 onContentChange: { documentID, markdown, historyBoundary in
                     state.updateContent(
                         markdown,
@@ -2087,11 +2100,19 @@ private struct ReadingWidthRuler: View {
 
 private struct SourceEditor: View {
     @EnvironmentObject private var state: AppState
+    let documentID: UUID
+    let splitSynchronizer: SplitEditorSynchronizer
+    let isSplitSynchronizationEnabled: Bool
 
     var body: some View {
         ZStack {
             Color(nsColor: .textBackgroundColor)
-            MarkdownSourceEditor(text: state.bindingForCurrentContent())
+            MarkdownSourceEditor(
+                text: state.bindingForCurrentContent(),
+                documentID: documentID,
+                splitSynchronizer: splitSynchronizer,
+                isSplitSynchronizationEnabled: isSplitSynchronizationEnabled
+            )
         }
     }
 }

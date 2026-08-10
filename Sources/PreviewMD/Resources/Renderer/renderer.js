@@ -58,7 +58,10 @@
       body: bodyLines.join("\n"),
       lineOffset: lineOffset,
       html:
-        '<aside class="frontmatter-card" contenteditable="false" data-frontmatter-source="' +
+        '<aside class="frontmatter-card" contenteditable="false" ' +
+        'data-previewmd-source-start="0" data-previewmd-source-end="' +
+        lineOffset +
+        '" data-frontmatter-source="' +
         encodeURIComponent(source) +
         '"><div class="frontmatter-label">Document metadata</div><dl>' +
         (rows || fallback) +
@@ -267,6 +270,39 @@
     "code_block",
     "hr",
   ]);
+
+  const sourcePositionTokenTypes = new Set([
+    "heading_open",
+    "paragraph_open",
+    "blockquote_open",
+    "bullet_list_open",
+    "ordered_list_open",
+    "list_item_open",
+    "table_open",
+    "fence",
+    "code_block",
+    "hr",
+  ]);
+
+  function markSourcePositionTokens(tokens, lineOffset) {
+    tokens.forEach((token) => {
+      if (
+        !sourcePositionTokenTypes.has(token.type) ||
+        !Array.isArray(token.map) ||
+        token.hidden
+      ) {
+        return;
+      }
+      token.attrSet(
+        "data-previewmd-source-start",
+        String(token.map[0] + lineOffset)
+      );
+      token.attrSet(
+        "data-previewmd-source-end",
+        String(token.map[1] + lineOffset)
+      );
+    });
+  }
 
   function preferredChangeKind(kinds) {
     if (kinds.includes("modified")) return "modified";
@@ -857,6 +893,7 @@
       const frontmatter = extractFrontmatter(options.markdown || "");
       const renderEnvironment = { headingIndex: 0 };
       const tokens = md.parse(frontmatter.body, renderEnvironment);
+      markSourcePositionTokens(tokens, frontmatter.lineOffset);
       const frontmatterChangeIndexes = markExternalChangeTokens(
         tokens,
         options.externalChanges || [],
