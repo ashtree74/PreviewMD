@@ -556,6 +556,30 @@
     });
   }
 
+  function parseSearchQuery(query) {
+    const normalized = (query || "").trim().replace(/\s+/g, " ");
+    if (!normalized) return { components: [], preferredPhrase: "" };
+
+    const components = [];
+    const seen = new Set();
+    const expression = /"([^"]+)"|(\S+)/g;
+    let match;
+    while ((match = expression.exec(normalized)) !== null) {
+      const value = (match[1] || match[2] || "").trim().replace(/\s+/g, " ");
+      const key = value.toLocaleLowerCase();
+      if (value && !seen.has(key)) {
+        seen.add(key);
+        components.push(value);
+      }
+    }
+
+    return {
+      components: components,
+      preferredPhrase:
+        !normalized.includes('"') && components.length > 1 ? normalized : "",
+    };
+  }
+
   function findInDocument(query) {
     activeSearchText = query || "";
     if (window.CSS && CSS.highlights) {
@@ -564,17 +588,27 @@
     const normalized = activeSearchText.trim();
     if (!normalized) return;
 
+    const searchQuery = parseSearchQuery(normalized);
+    if (!searchQuery.components.length) return;
+
     if (!(window.CSS && CSS.highlights && window.Highlight)) {
-      window.find(normalized, false, false, true, false, true, false);
+      window.find(
+        searchQuery.preferredPhrase || searchQuery.components[0],
+        false,
+        false,
+        true,
+        false,
+        true,
+        false
+      );
       return;
     }
 
-    const ranges = [];
-    const needle = normalized.toLocaleLowerCase();
+    const textNodes = [];
     const walker = document.createTreeWalker(article, NodeFilter.SHOW_TEXT, {
       acceptNode: function (node) {
         if (!node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
-        if (node.parentElement.closest("pre, code, script, style")) {
+        if (node.parentElement.closest("script, style")) {
           return NodeFilter.FILTER_REJECT;
         }
         return NodeFilter.FILTER_ACCEPT;
@@ -582,16 +616,43 @@
     });
 
     while (walker.nextNode()) {
-      const node = walker.currentNode;
-      const haystack = node.nodeValue.toLocaleLowerCase();
-      let start = 0;
-      while ((start = haystack.indexOf(needle, start)) !== -1) {
-        const range = new Range();
-        range.setStart(node, start);
-        range.setEnd(node, start + needle.length);
-        ranges.push(range);
-        start += needle.length;
+      textNodes.push(walker.currentNode);
+    }
+
+    function rangesFor(needles) {
+      const ranges = [];
+      const foldedNeedles = needles.map(function (needle) {
+        return needle.toLocaleLowerCase();
+      });
+
+      for (const node of textNodes) {
+        const haystack = node.nodeValue.toLocaleLowerCase();
+        const matches = [];
+        for (const needle of foldedNeedles) {
+          let start = 0;
+          while ((start = haystack.indexOf(needle, start)) !== -1) {
+            matches.push({ start: start, length: needle.length });
+            start += needle.length;
+          }
+        }
+        matches.sort(function (left, right) {
+          return left.start - right.start;
+        });
+        for (const match of matches) {
+          const range = new Range();
+          range.setStart(node, match.start);
+          range.setEnd(node, match.start + match.length);
+          ranges.push(range);
+        }
       }
+      return ranges;
+    }
+
+    let ranges = searchQuery.preferredPhrase
+      ? rangesFor([searchQuery.preferredPhrase])
+      : [];
+    if (!ranges.length) {
+      ranges = rangesFor(searchQuery.components);
     }
 
     if (ranges.length) {

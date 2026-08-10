@@ -32,13 +32,38 @@ final class WorkspaceLayoutTests: XCTestCase {
         )
         let sidebar = String(sidebarTail[..<sidebarEnd.lowerBound])
 
-        XCTAssertTrue(sidebar.contains("Picker(\"Sidebar view\""))
+        XCTAssertTrue(sidebar.contains("SidebarModePicker(selection: $state.sidebarMode)"))
         XCTAssertTrue(sidebar.contains("SidebarMode.allCases"))
         XCTAssertFalse(sidebar.contains("BrandHeader()"))
         XCTAssertFalse(sidebar.contains("PREVIEWMD"))
         XCTAssertFalse(sidebar.contains("by Jesion"))
         XCTAssertFalse(sidebar.contains("Showcase"))
         XCTAssertFalse(sidebar.contains("openWelcome"))
+    }
+
+    func testSidebarModesUseNamedNativeTooltipSegments() throws {
+        let source = try workspaceSource()
+
+        XCTAssertTrue(source.contains("SidebarModePicker(selection: $state.sidebarMode)"))
+        XCTAssertTrue(source.contains("control.setToolTip(mode.title, forSegment: segment)"))
+        XCTAssertTrue(source.contains("FolderSearchSidebar()"))
+    }
+
+    func testFocusControlFollowsReadingAppearanceInToolbar() throws {
+        let source = try workspaceSource()
+        let toolbarStart = try XCTUnwrap(source.range(of: "private struct ToolbarUtilities"))
+        let toolbarTail = source[toolbarStart.lowerBound...]
+        let toolbarEnd = try XCTUnwrap(
+            toolbarTail.range(of: "private struct SidebarView")
+        )
+        let toolbar = String(toolbarTail[..<toolbarEnd.lowerBound])
+
+        let appearance = try XCTUnwrap(toolbar.range(of: "Label(\"Reading appearance\""))
+        let focus = try XCTUnwrap(toolbar.range(of: "Label(\"Focus\""))
+        let reload = try XCTUnwrap(toolbar.range(of: "Label(\"Reload\""))
+
+        XCTAssertLessThan(appearance.lowerBound, focus.lowerBound)
+        XCTAssertLessThan(focus.lowerBound, reload.lowerBound)
     }
 
     func testReadingWidthRulerOffersPresetsInsteadOfFitTablesAction() throws {

@@ -275,18 +275,20 @@ enum ReadingWidth: String, CaseIterable, Identifiable {
     }
 }
 
-enum SidebarMode: String, CaseIterable, Identifiable {
+enum SidebarMode: Int, CaseIterable, Identifiable {
     case recent
     case tree
     case files
+    case search
 
-    var id: String { rawValue }
+    var id: Int { rawValue }
 
     var title: String {
         switch self {
-        case .recent: "Recent"
-        case .tree: "Folder"
+        case .recent: "Recent Documents"
+        case .tree: "Folder Browser"
         case .files: "All Files"
+        case .search: "Search Folder Contents"
         }
     }
 
@@ -294,7 +296,8 @@ enum SidebarMode: String, CaseIterable, Identifiable {
         switch self {
         case .recent: "clock.arrow.circlepath"
         case .tree: "folder"
-        case .files: "doc.text.magnifyingglass"
+        case .files: "doc.text"
+        case .search: "doc.text.magnifyingglass"
         }
     }
 }

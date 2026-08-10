@@ -735,6 +735,17 @@ private struct ToolbarUtilities: View {
             }
             .help("Reading appearance")
 
+            // Focus belongs beside reading appearance: both controls change
+            // the reading environment, while reload/share/outline act on the
+            // current document. The bar is stripped as soon as focus begins.
+            Button {
+                state.enterFocusMode()
+            } label: {
+                Label("Focus", systemImage: "rectangle.center.inset.filled")
+            }
+            .disabled(!state.canEnterFocusMode)
+            .help("Focus mode — just the page (⇧⌘F)")
+
             Button {
                 state.reloadCurrent()
             } label: {
@@ -778,16 +789,6 @@ private struct ToolbarUtilities: View {
             }
             .disabled(state.currentDocument == nil)
             .help(state.isInspectorVisible ? "Hide outline" : "Show outline")
-
-            // Only ever enters: the bar is stripped once focus mode is on, and
-            // ⇧⌘F or Escape brings it back.
-            Button {
-                state.enterFocusMode()
-            } label: {
-                Label("Focus", systemImage: "rectangle.center.inset.filled")
-            }
-            .disabled(!state.canEnterFocusMode)
-            .help("Focus mode — just the page (⇧⌘F)")
         }
         .controlGroupStyle(.navigation)
     }
@@ -934,90 +935,28 @@ private extension NSColor {
 private struct SidebarView: View {
     @EnvironmentObject private var state: AppState
 
-    private var pinned: [RecentDocument] {
-        state.recentDocuments.filter(\.isPinned)
-    }
-
-    private var recent: [RecentDocument] {
-        state.recentDocuments.filter { !$0.isPinned }
-    }
-
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Sidebar view", selection: $state.sidebarMode) {
-                ForEach(SidebarMode.allCases) { mode in
-                    Image(systemName: mode.symbol)
-                        .help(mode.title)
-                        .tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(.horizontal, 12)
-            .padding(.top, 9)
-            .padding(.bottom, 7)
+            SidebarModePicker(selection: $state.sidebarMode)
+                .frame(width: 176, height: 32)
+                .padding(.top, 9)
+                .padding(.bottom, 7)
 
-            List {
+            Divider()
+
+            Group {
                 switch state.sidebarMode {
                 case .recent:
-                    if !pinned.isEmpty {
-                        Section("Pinned") {
-                            ForEach(pinned) { item in
-                                RecentRow(item: item)
-                            }
-                        }
-                    }
-                    if !recent.isEmpty {
-                        Section("Recent") {
-                            ForEach(recent) { item in
-                                RecentRow(item: item)
-                            }
-                        }
-                    }
-                    if pinned.isEmpty && recent.isEmpty {
-                        ContentUnavailableView(
-                            "No Recent Files",
-                            systemImage: "clock",
-                            description: Text("Open a Markdown document to begin.")
-                        )
-                    }
-
+                    RecentDocumentsSidebar()
                 case .tree:
-                    if let folderURL = state.workspaceFolderURL {
-                        Section {
-                            WorkspaceFolderContents {
-                                OutlineGroup(
-                                    state.workspaceFolderItems,
-                                    children: \.children
-                                ) { item in
-                                    FolderTreeRow(item: item)
-                                }
-                            }
-                        } header: {
-                            FolderSectionHeader(folderURL: folderURL)
-                        }
-                    } else {
-                        OpenFolderSidebarPrompt()
-                    }
-
+                    FolderBrowserSidebar()
                 case .files:
-                    if let folderURL = state.workspaceFolderURL {
-                        Section {
-                            WorkspaceFolderContents {
-                                ForEach(state.workspaceFiles) { item in
-                                    WorkspaceFileRow(item: item, rootURL: folderURL)
-                                }
-                            }
-                        } header: {
-                            FlatFilesHeader(folderURL: folderURL)
-                        }
-                    } else {
-                        OpenFolderSidebarPrompt()
-                    }
+                    FlatFilesSidebar()
+                case .search:
+                    FolderSearchSidebar()
                 }
             }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Divider()
 
@@ -1049,50 +988,454 @@ private struct SidebarView: View {
     }
 }
 
-private struct WorkspaceFolderContents<Content: View>: View {
-    @EnvironmentObject private var state: AppState
-    @ViewBuilder let content: () -> Content
+/// AppKit exposes per-segment help tags, which produce the standard delayed
+/// macOS tooltip bubble. SwiftUI's segmented picker only exposes one tooltip
+/// for the entire control, so this small bridge keeps every icon discoverable.
+private struct SidebarModePicker: NSViewRepresentable {
+    @Binding var selection: SidebarMode
 
-    var body: some View {
-        if state.workspaceFolderItems.isEmpty {
-            if state.isWorkspaceFolderLoading {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Scanning for Markdown…")
-                }
-                .foregroundStyle(.secondary)
-            } else {
-                ContentUnavailableView(
-                    "No Markdown Files",
-                    systemImage: "doc.text.magnifyingglass",
-                    description: Text("No supported documents were found.")
-                )
-            }
-        } else {
-            content()
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeNSView(context: Context) -> NSSegmentedControl {
+        let control = NSSegmentedControl()
+        control.segmentCount = SidebarMode.allCases.count
+        control.trackingMode = .selectOne
+        control.segmentStyle = .rounded
+        control.controlSize = .large
+        control.target = context.coordinator
+        control.action = #selector(Coordinator.selectionChanged(_:))
+        control.setAccessibilityLabel("Sidebar mode")
+
+        for mode in SidebarMode.allCases {
+            let segment = mode.rawValue
+            control.setImage(
+                NSImage(systemSymbolName: mode.symbol, accessibilityDescription: mode.title),
+                forSegment: segment
+            )
+            control.setImageScaling(.scaleProportionallyDown, forSegment: segment)
+            control.setWidth(42, forSegment: segment)
+            control.setToolTip(mode.title, forSegment: segment)
+        }
+        control.selectedSegment = selection.rawValue
+        return control
+    }
+
+    func updateNSView(_ control: NSSegmentedControl, context: Context) {
+        context.coordinator.parent = self
+        if control.selectedSegment != selection.rawValue {
+            control.selectedSegment = selection.rawValue
+        }
+    }
+
+    final class Coordinator: NSObject {
+        var parent: SidebarModePicker
+
+        init(parent: SidebarModePicker) {
+            self.parent = parent
+        }
+
+        @MainActor @objc func selectionChanged(_ sender: NSSegmentedControl) {
+            guard let mode = SidebarMode(rawValue: sender.selectedSegment) else { return }
+            parent.selection = mode
         }
     }
 }
 
-private struct OpenFolderSidebarPrompt: View {
+private struct RecentDocumentsSidebar: View {
+    @EnvironmentObject private var state: AppState
+
+    private var pinned: [RecentDocument] {
+        state.recentDocuments.filter(\.isPinned)
+    }
+
+    private var recent: [RecentDocument] {
+        state.recentDocuments.filter { !$0.isPinned }
+    }
+
+    var body: some View {
+        if state.recentDocuments.isEmpty {
+            SidebarPlaceholder(
+                title: "No Recent Documents",
+                description: "Files you open will appear here.",
+                symbol: "clock.arrow.circlepath"
+            )
+        } else {
+            List {
+                if !pinned.isEmpty {
+                    Section("Pinned") {
+                        ForEach(pinned) { item in
+                            RecentRow(item: item)
+                        }
+                    }
+                }
+
+                if !recent.isEmpty {
+                    Section("Recent") {
+                        ForEach(recent) { item in
+                            RecentRow(item: item)
+                        }
+                    }
+                }
+            }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+        }
+    }
+}
+
+private struct FolderBrowserSidebar: View {
     @EnvironmentObject private var state: AppState
 
     var body: some View {
-        VStack(spacing: 9) {
-            Image(systemName: "folder.badge.plus")
-                .font(.title2)
-                .foregroundStyle(.secondary)
-            Text("Open a folder to browse its Markdown files.")
-                .font(.caption)
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-            Button("Open Folder…") {
+        if let folderURL = state.workspaceFolderURL {
+            List {
+                Section {
+                    if state.workspaceFolderItems.isEmpty {
+                        if state.isWorkspaceFolderLoading {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Scanning for Markdown…")
+                            }
+                            .foregroundStyle(.secondary)
+                        } else {
+                            VStack(spacing: 6) {
+                                Label(
+                                    "No Markdown Files",
+                                    systemImage: "doc.text.magnifyingglass"
+                                )
+                                .font(.callout.weight(.medium))
+                                Text("This folder has no supported documents.")
+                                    .font(.caption)
+                                    .multilineTextAlignment(.center)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                        }
+                    } else {
+                        OutlineGroup(
+                            state.workspaceFolderItems,
+                            children: \.children
+                        ) { item in
+                            FolderTreeRow(item: item)
+                        }
+                    }
+                } header: {
+                    FolderSectionHeader(folderURL: folderURL)
+                }
+            }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+        } else {
+            SidebarPlaceholder(
+                title: "No Folder Open",
+                description: "Open a folder to browse its Markdown files.",
+                symbol: "folder"
+            ) {
                 state.presentFolderOpenPanel()
             }
-            .controlSize(.small)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 18)
+    }
+}
+
+private struct FlatFilesSidebar: View {
+    @EnvironmentObject private var state: AppState
+
+    var body: some View {
+        if let folderURL = state.workspaceFolderURL {
+            List {
+                Section {
+                    if state.workspaceFolderItems.isEmpty {
+                        if state.isWorkspaceFolderLoading {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Scanning for Markdown…")
+                            }
+                            .foregroundStyle(.secondary)
+                        } else {
+                            ContentUnavailableView(
+                                "No Markdown Files",
+                                systemImage: "doc.text.magnifyingglass",
+                                description: Text("No supported documents were found.")
+                            )
+                        }
+                    } else {
+                        ForEach(state.workspaceFiles) { item in
+                            WorkspaceFileRow(item: item, rootURL: folderURL)
+                        }
+                    }
+                } header: {
+                    FlatFilesHeader(folderURL: folderURL)
+                }
+            }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+        } else {
+            SidebarPlaceholder(
+                title: "No Folder Open",
+                description: "Open a folder to browse all of its Markdown files.",
+                symbol: "doc.text"
+            ) {
+                state.presentFolderOpenPanel()
+            }
+        }
+    }
+}
+
+private struct FolderSearchSidebar: View {
+    @EnvironmentObject private var state: AppState
+    @FocusState private var isSearchFocused: Bool
+
+    private var queryBinding: Binding<String> {
+        Binding(
+            get: { state.workspaceSearchQuery },
+            set: { state.setWorkspaceSearchQuery($0) }
+        )
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            searchField
+
+            Divider()
+
+            if state.workspaceFolderURL == nil {
+                SidebarPlaceholder(
+                    title: "No Folder to Search",
+                    description: "Open a folder, then search across all of its documents.",
+                    symbol: "doc.text.magnifyingglass"
+                ) {
+                    state.presentFolderOpenPanel()
+                }
+            } else if state.workspaceSearchQuery
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty {
+                SidebarPlaceholder(
+                    title: "Search File Contents",
+                    description: "Type a phrase or several words. Partial words also match.",
+                    symbol: "text.magnifyingglass"
+                )
+            } else if state.workspaceSearchResults.isEmpty {
+                if state.isWorkspaceSearching {
+                    VStack(spacing: 9) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Searching folder…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    SidebarPlaceholder(
+                        title: "No Matches",
+                        description: "Try a shorter fragment or fewer words.",
+                        symbol: "magnifyingglass"
+                    )
+                }
+            } else {
+                VStack(spacing: 0) {
+                    HStack(spacing: 7) {
+                        Text(resultSummary)
+                        Spacer()
+                        if state.isWorkspaceSearching {
+                            ProgressView()
+                                .controlSize(.mini)
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+
+                    List(state.workspaceSearchResults) { result in
+                        FolderSearchResultRow(result: result)
+                    }
+                    .listStyle(.sidebar)
+                    .scrollContentBackground(.hidden)
+                    .opacity(state.isWorkspaceSearching ? 0.68 : 1)
+                }
+            }
+        }
+        .task {
+            isSearchFocused = true
+        }
+        .onExitCommand {
+            if state.workspaceSearchQuery.isEmpty {
+                state.sidebarMode = state.workspaceFolderURL == nil ? .recent : .tree
+            } else {
+                state.setWorkspaceSearchQuery("")
+            }
+        }
+    }
+
+    private var searchField: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 7) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+
+                TextField("Search contents", text: queryBinding)
+                    .textFieldStyle(.plain)
+                    .focused($isSearchFocused)
+                    .onSubmit {
+                        state.setWorkspaceSearchQuery(
+                            state.workspaceSearchQuery,
+                            immediately: true
+                        )
+                    }
+
+                if state.isWorkspaceSearching {
+                    ProgressView()
+                        .controlSize(.mini)
+                } else if !state.workspaceSearchQuery.isEmpty {
+                    Button {
+                        state.setWorkspaceSearchQuery("")
+                        isSearchFocused = true
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Clear Search")
+                }
+            }
+            .padding(.horizontal, 9)
+            .frame(height: 28)
+            .background(
+                Color(nsColor: .controlBackgroundColor),
+                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(
+                        Color(nsColor: .separatorColor).opacity(0.55),
+                        lineWidth: 0.75
+                    )
+            }
+
+            Text("All words · use \"quotes\" for an exact phrase")
+                .font(.system(size: 9.5))
+                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 2)
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+        .help("Search all files in the open folder. Use quotes for an exact phrase.")
+    }
+
+    private var resultSummary: String {
+        let count = state.workspaceSearchResults.count
+        return count == 1 ? "1 matching file" : "\(count) matching files"
+    }
+}
+
+private struct FolderSearchResultRow: View {
+    @EnvironmentObject private var state: AppState
+    let result: FolderSearchResult
+
+    var body: some View {
+        Button {
+            state.openWorkspaceSearchResult(result)
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Image(systemName: "doc.text")
+                        .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                    Text(result.title)
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Spacer(minLength: 2)
+                    Text(result.matchCount.formatted())
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(.quaternary, in: Capsule())
+                        .help(matchCountHelp)
+                }
+
+                Text(result.relativePath)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+
+                Text(result.snippet)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .multilineTextAlignment(.leading)
+            }
+            .padding(.horizontal, 7)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .background(
+                isSelected ? Color.accentColor.opacity(0.13) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+            )
+        }
+        .buttonStyle(.plain)
+        .help(result.relativePath)
+        .contextMenu {
+            Button("Show in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([result.url])
+            }
+        }
+    }
+
+    private var isSelected: Bool {
+        state.sidebarSelection == result.url.standardizedFileURL.path
+    }
+
+    private var matchCountHelp: String {
+        result.matchCount == 1 ? "1 match" : "\(result.matchCount) matches"
+    }
+}
+
+private struct SidebarPlaceholder: View {
+    let title: String
+    let description: String
+    let symbol: String
+    let action: (() -> Void)?
+
+    init(
+        title: String,
+        description: String,
+        symbol: String,
+        action: (() -> Void)? = nil
+    ) {
+        self.title = title
+        self.description = description
+        self.symbol = symbol
+        self.action = action
+    }
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: symbol)
+                .font(.system(size: 24, weight: .light))
+                .foregroundStyle(.tertiary)
+            Text(title)
+                .font(.callout.weight(.medium))
+            Text(description)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            if let action {
+                Button("Open Folder…", action: action)
+                    .controlSize(.small)
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

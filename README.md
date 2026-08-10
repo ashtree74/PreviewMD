@@ -19,7 +19,7 @@ A native macOS Markdown reader with a print-inspired preview, editing, tabs, out
 - Fixed reading widths and a fluid Window mode that follows all available space
 - Modern, Classic, Editorial, and named custom reading styles with offline system typography
 - Native macOS sidebar, toolbar, menus, keyboard shortcuts, and dark mode
-- Sidebar tabs for recent files, a folder tree, and a sortable recursive file list
+- Sidebar tabs for recent files, a folder tree, a sortable file list, and full-content search
 - Finder Quick Look previews for Markdown files after installation
 - A4, Letter, Legal, and A5 PDF export with orientation, margins, style, and light/dark appearance
 - Printing that always uses a legible light appearance
@@ -71,6 +71,11 @@ left sidebar, prunes directories that contain no supported documents, and opens
 selected files in the existing tab bar. Opening a folder never opens a README
 or another document automatically. Drop a folder anywhere in the main window
 to open it the same way.
+
+Folder search accepts partial words and multiple words in any order, prefers a
+complete phrase when one exists, and uses quotes for a required exact phrase.
+Results show the relative path, a matching snippet, and the match count;
+selecting one opens the document and highlights the relevant text.
 
 A local development build can be registered without copying the app:
 

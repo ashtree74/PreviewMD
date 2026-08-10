@@ -98,6 +98,87 @@ final class FolderWorkspaceTests: XCTestCase {
         }
     }
 
+    func testFolderSearchPrefersWholePhraseButAlsoFindsWordsAcrossContent() throws {
+        let root = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try write(
+            "The native Markdown reader keeps local files private.",
+            to: root.appendingPathComponent("phrase.md")
+        )
+        try write(
+            "A native interface is useful.\nThe reader opens Markdown files.",
+            to: root.appendingPathComponent("separate.md")
+        )
+        try write(
+            "This document mentions a reader but nothing else.",
+            to: root.appendingPathComponent("partial.md")
+        )
+        let items = try MarkdownFolderTree.contents(of: root)
+
+        let results = try MarkdownFolderSearch.search(
+            query: "native Markdown reader",
+            rootURL: root,
+            items: items
+        )
+
+        XCTAssertEqual(results.map(\.title), ["phrase", "separate"])
+        XCTAssertTrue(results[0].snippet.contains("native Markdown reader"))
+    }
+
+    func testFolderSearchSupportsQuotedPhrasesAndPartialWords() throws {
+        let root = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try write(
+            "Authentication uses a secure token.",
+            to: root.appendingPathComponent("exact.md")
+        )
+        try write(
+            "A secure local store keeps each token protected.",
+            to: root.appendingPathComponent("separate.md")
+        )
+        let items = try MarkdownFolderTree.contents(of: root)
+
+        let phraseResults = try MarkdownFolderSearch.search(
+            query: "\"secure token\"",
+            rootURL: root,
+            items: items
+        )
+        let fragmentResults = try MarkdownFolderSearch.search(
+            query: "auth token",
+            rootURL: root,
+            items: items
+        )
+
+        XCTAssertEqual(phraseResults.map(\.title), ["exact"])
+        XCTAssertEqual(fragmentResults.map(\.title), ["exact"])
+    }
+
+    func testWorkspaceSearchRunsOffFolderTreeAndOpensTheMatchingFile() async throws {
+        let root = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let matchURL = root.appendingPathComponent("guide.md")
+        try write("A distinctive searchable fragment lives here.", to: matchURL)
+        let state = try makeState()
+
+        state.openFolder(url: root)
+        for _ in 0..<100 where state.isWorkspaceFolderLoading {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        state.sidebarMode = .search
+        state.setWorkspaceSearchQuery("searchable frag", immediately: true)
+        for _ in 0..<100 where state.isWorkspaceSearching {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        let result = try XCTUnwrap(state.workspaceSearchResults.first)
+        XCTAssertEqual(result.url.standardizedFileURL, matchURL.standardizedFileURL)
+        state.openWorkspaceSearchResult(result)
+        XCTAssertEqual(state.currentDocument?.url?.standardizedFileURL, matchURL.standardizedFileURL)
+        XCTAssertEqual(state.searchText, "searchable frag")
+    }
+
     private func makeFolder() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("PreviewMD-folder-\(UUID().uuidString)", isDirectory: true)

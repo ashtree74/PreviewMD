@@ -35,6 +35,9 @@ final class AppState: ObservableObject {
     @Published private(set) var workspaceFolderURL: URL?
     @Published private(set) var workspaceFolderItems: [FolderTreeItem] = []
     @Published private(set) var isWorkspaceFolderLoading = false
+    @Published private(set) var workspaceSearchQuery = ""
+    @Published private(set) var workspaceSearchResults: [FolderSearchResult] = []
+    @Published private(set) var isWorkspaceSearching = false
 
     let rendererController = RendererController()
 
@@ -51,6 +54,8 @@ final class AppState: ObservableObject {
     private var workspaceFolderRequestID = UUID()
     private var workspaceFolderLoadTask: Task<Void, Never>?
     private var lastWorkspaceLiveRefresh = Date.distantPast
+    private var workspaceSearchRequestID = UUID()
+    private var workspaceSearchTask: Task<Void, Never>?
 
     /// Restored when focus mode ends, so entering it to read does not quietly
     /// throw away the split/source view or inspector you were working with.
@@ -158,6 +163,7 @@ final class AppState: ObservableObject {
         documents[index].contentRevision &+= 1
         documents[index].lastEditOrigin = origin
         documents[index].lastEditAt = now
+        refreshWorkspaceSearchIfNeeded(for: documentID)
     }
 
     var canUndoCurrent: Bool {
@@ -178,6 +184,7 @@ final class AppState: ObservableObject {
         documents[index].contentRevision &+= 1
         documents[index].lastEditOrigin = nil
         documents[index].lastEditAt = nil
+        refreshWorkspaceSearchIfNeeded(for: documents[index].id)
     }
 
     func redoCurrent() {
@@ -190,6 +197,7 @@ final class AppState: ObservableObject {
         documents[index].contentRevision &+= 1
         documents[index].lastEditOrigin = nil
         documents[index].lastEditAt = nil
+        refreshWorkspaceSearchIfNeeded(for: documents[index].id)
     }
 
     func openWelcome() {
@@ -284,11 +292,115 @@ final class AppState: ObservableObject {
     func closeWorkspaceFolder() {
         workspaceFolderLoadTask?.cancel()
         workspaceFolderLoadTask = nil
+        cancelWorkspaceSearch(clearsQuery: true)
         workspaceFolderRequestID = UUID()
         workspaceFolderURL = nil
         workspaceFolderItems = []
         isWorkspaceFolderLoading = false
         sidebarMode = .recent
+    }
+
+    func setWorkspaceSearchQuery(_ query: String, immediately: Bool = false) {
+        workspaceSearchQuery = query
+        workspaceSearchTask?.cancel()
+        workspaceSearchTask = nil
+        workspaceSearchRequestID = UUID()
+
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            workspaceSearchResults = []
+            isWorkspaceSearching = false
+            return
+        }
+        guard let rootURL = workspaceFolderURL else {
+            workspaceSearchResults = []
+            isWorkspaceSearching = false
+            return
+        }
+        guard !workspaceFolderItems.isEmpty else {
+            workspaceSearchResults = []
+            isWorkspaceSearching = isWorkspaceFolderLoading
+            return
+        }
+
+        let requestID = UUID()
+        let items = workspaceFolderItems
+        let overrides: [String: String] = documents.reduce(into: [:]) { result, document in
+            guard let url = document.url else { return }
+            result[url.standardizedFileURL.path] = document.content
+        }
+        workspaceSearchRequestID = requestID
+        isWorkspaceSearching = true
+
+        workspaceSearchTask = Task { [weak self] in
+            do {
+                if !immediately {
+                    try await Task.sleep(for: .milliseconds(220))
+                }
+                try Task.checkCancellation()
+
+                let searchTask = Task.detached(priority: .userInitiated) {
+                    try MarkdownFolderSearch.search(
+                        query: trimmed,
+                        rootURL: rootURL,
+                        items: items,
+                        contentOverrides: overrides
+                    )
+                }
+                let results = try await withTaskCancellationHandler {
+                    try await searchTask.value
+                } onCancel: {
+                    searchTask.cancel()
+                }
+
+                guard let self,
+                      self.workspaceSearchRequestID == requestID,
+                      self.workspaceFolderURL == rootURL,
+                      self.workspaceSearchQuery == query
+                else { return }
+                self.workspaceSearchResults = results
+                self.isWorkspaceSearching = false
+                self.workspaceSearchTask = nil
+            } catch is CancellationError {
+                guard let self, self.workspaceSearchRequestID == requestID else { return }
+                self.isWorkspaceSearching = false
+                self.workspaceSearchTask = nil
+            } catch {
+                guard let self, self.workspaceSearchRequestID == requestID else { return }
+                self.workspaceSearchResults = []
+                self.isWorkspaceSearching = false
+                self.workspaceSearchTask = nil
+                self.present(error: "Couldn’t search this folder. \(error.localizedDescription)")
+            }
+        }
+    }
+
+    func openWorkspaceSearchResult(_ result: FolderSearchResult) {
+        open(url: result.url)
+        // The document finder understands the same phrase/word syntax as the
+        // folder search, so the opened document scrolls to and highlights the
+        // match instead of leaving the reader at the top of the file.
+        searchText = workspaceSearchQuery
+    }
+
+    private func cancelWorkspaceSearch(clearsQuery: Bool) {
+        workspaceSearchTask?.cancel()
+        workspaceSearchTask = nil
+        workspaceSearchRequestID = UUID()
+        workspaceSearchResults = []
+        isWorkspaceSearching = false
+        if clearsQuery {
+            workspaceSearchQuery = ""
+        }
+    }
+
+    private func refreshWorkspaceSearchIfNeeded(for documentID: UUID) {
+        guard !workspaceSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let document = documents.first(where: { $0.id == documentID }),
+              let url = document.url,
+              isInsideWorkspaceFolder(url)
+        else { return }
+        setWorkspaceSearchQuery(workspaceSearchQuery)
     }
 
     private func loadFolder(
@@ -310,6 +422,11 @@ final class AppState: ObservableObject {
 
         let requestID = UUID()
         workspaceFolderLoadTask?.cancel()
+        if clearsExistingItems {
+            cancelWorkspaceSearch(clearsQuery: true)
+        } else if showsLoading {
+            cancelWorkspaceSearch(clearsQuery: false)
+        }
         workspaceFolderRequestID = requestID
         // Silent live scans run every two seconds. Reassigning the same
         // @Published URL still emits objectWillChange, which causes SwiftUI to
@@ -335,13 +452,21 @@ final class AppState: ObservableObject {
                           self.workspaceFolderRequestID == requestID,
                           self.workspaceFolderURL == url
                     else { return }
-                    if self.workspaceFolderItems != items {
+                    let folderContentsChanged = self.workspaceFolderItems != items
+                    if folderContentsChanged {
                         self.workspaceFolderItems = items
                     }
                     if showsLoading {
                         self.isWorkspaceFolderLoading = false
                     }
                     self.workspaceFolderLoadTask = nil
+                    if !self.workspaceSearchQuery.isEmpty,
+                       showsLoading || folderContentsChanged {
+                        self.setWorkspaceSearchQuery(
+                            self.workspaceSearchQuery,
+                            immediately: true
+                        )
+                    }
                 } catch is CancellationError {
                     guard let self, self.workspaceFolderRequestID == requestID else { return }
                     if showsLoading {
