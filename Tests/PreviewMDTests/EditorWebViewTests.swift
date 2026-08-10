@@ -150,6 +150,54 @@ final class EditorWebViewTests: XCTestCase, WKNavigationDelegate {
         XCTAssertEqual(result as? String, "Hello **world**.\n")
     }
 
+    func testRichFormattingInsideListPreservesOneMarkdownItem() async throws {
+        let markdown = "- **Review agent edits.** Keep Live Reload on while editing.\n"
+        let webView = try await makeEditor(markdown: markdown)
+
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const item = document.querySelector("#preview-document li");
+            const selectWord = (word) => {
+              const walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT);
+              let node = null;
+              while (walker.nextNode()) {
+                if (walker.currentNode.nodeValue.includes(word)) {
+                  node = walker.currentNode;
+                  break;
+                }
+              }
+              const start = node.nodeValue.indexOf(word);
+              const range = document.createRange();
+              range.setStart(node, start);
+              range.setEnd(node, start + word.length);
+              const selection = window.getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+            };
+
+            selectWord("Live");
+            document.execCommand("italic", false, null);
+            selectWord("Keep");
+            document.execCommand("bold", false, null);
+
+            return {
+              markdown: window.previewmdFlushEditor(),
+              sourceStart: item.dataset.previewmdSourceStart,
+              sourceEnd: item.dataset.previewmdSourceEnd,
+            };
+            """,
+            contentWorld: .page
+        )
+        let output = try XCTUnwrap(result as? [String: Any])
+
+        XCTAssertEqual(
+            output["markdown"] as? String,
+            "- **Review agent edits.** **Keep** *Live* Reload on while editing.\n"
+        )
+        XCTAssertEqual(output["sourceStart"] as? String, "0")
+        XCTAssertEqual(output["sourceEnd"] as? String, "1")
+    }
+
     func testFlushWithoutEditsReturnsExactSource() async throws {
         let markdown = """
         # Exact source
@@ -576,6 +624,98 @@ final class EditorWebViewTests: XCTestCase, WKNavigationDelegate {
         XCTAssertEqual(response["markdown"] as? String, "Keep: visible\n")
     }
 
+    func testMultilinePlainTextPastePreservesLineAndParagraphBreaks() async throws {
+        let webView = try await makeEditor(markdown: "Replace me\n")
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const article = document.querySelector("#preview-document");
+            const paragraph = article.querySelector("p");
+            const range = document.createRange();
+            range.selectNodeContents(paragraph);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            article.focus();
+
+            const event = new Event("paste", {
+              bubbles: true,
+              cancelable: true,
+            });
+            Object.defineProperty(event, "clipboardData", {
+              value: {
+                types: ["text/plain"],
+                getData(type) {
+                  return type === "text/plain"
+                    ? "INT DAY: OFFICE\\r\\n\\r\\nFirst visual line\\r\\n" +
+                      "Second visual line\\r\\n\\r\\nLast paragraph"
+                    : "";
+                },
+              },
+            });
+            article.dispatchEvent(event);
+            return {
+              prevented: event.defaultPrevented,
+              paragraphs: article.querySelectorAll(":scope > p").length,
+              hardBreaks: article.querySelectorAll(":scope > p > br").length,
+              markdown: window.previewmdFlushEditor(),
+            };
+            """,
+            contentWorld: .page
+        )
+        let response = try XCTUnwrap(result as? [String: Any])
+
+        XCTAssertEqual(response["prevented"] as? Bool, true)
+        XCTAssertEqual(
+            response["paragraphs"] as? Int,
+            3,
+            String(describing: response)
+        )
+        XCTAssertEqual(
+            response["hardBreaks"] as? Int,
+            1,
+            String(describing: response)
+        )
+        XCTAssertEqual(
+            response["markdown"] as? String,
+            "INT DAY: OFFICE\n\nFirst visual line  \nSecond visual line\n\n" +
+                "Last paragraph\n"
+        )
+    }
+
+    func testParagraphAndLineBreakCommandsSerializeDistinctMarkdownBreaks() async throws {
+        let webView = try await makeEditor(markdown: "First line\n")
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const article = document.querySelector("#preview-document");
+            const paragraph = article.querySelector("p");
+            const range = document.createRange();
+            range.selectNodeContents(paragraph);
+            range.collapse(false);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            article.focus();
+
+            document.execCommand("insertLineBreak", false, null);
+            document.execCommand("insertText", false, "continued");
+            document.execCommand("insertParagraph", false, null);
+            document.execCommand("insertText", false, "Second paragraph");
+            return {
+              hardBreaks: article.querySelectorAll("br").length,
+              markdown: window.previewmdFlushEditor(),
+            };
+            """,
+            contentWorld: .page
+        )
+        let response = try XCTUnwrap(result as? [String: Any])
+
+        XCTAssertEqual(response["hardBreaks"] as? Int, 1)
+        XCTAssertEqual(
+            response["markdown"] as? String,
+            "First line  \ncontinued\n\nSecond paragraph\n"
+        )
+    }
+
     func testSplitSyncMapsSelectionsBetweenSourceAndRenderedText() async throws {
         let markdown = """
         # Title
@@ -719,10 +859,18 @@ final class EditorWebViewTests: XCTestCase, WKNavigationDelegate {
               sourceLine: targetLine,
             });
             await new Promise((resolve) => setTimeout(resolve, 50));
+            const target = Array.from(document.querySelectorAll(
+              "li[data-previewmd-source-start]"
+            )).find((element) =>
+              Number(element.dataset.previewmdSourceStart) === targetLine
+            );
+            const rect = target && target.getBoundingClientRect();
             return {
               applied,
               scrollY: window.scrollY,
               position: window.previewmdCurrentSplitScrollPosition(),
+              targetCenter: rect ? rect.top + rect.height / 2 : -1,
+              viewportCenter: window.innerHeight / 2,
             };
             """,
             arguments: ["targetLine": targetLine],
@@ -732,6 +880,12 @@ final class EditorWebViewTests: XCTestCase, WKNavigationDelegate {
         let position = try XCTUnwrap(response["position"] as? [String: Any])
         XCTAssertEqual(response["applied"] as? Bool, true)
         XCTAssertGreaterThan(response["scrollY"] as? Double ?? 0, 100)
+        XCTAssertEqual(
+            response["targetCenter"] as? Double ?? .nan,
+            response["viewportCenter"] as? Double ?? .nan,
+            accuracy: 32,
+            String(describing: response)
+        )
         XCTAssertEqual(
             position["sourceLine"] as? Double ?? .nan,
             Double(targetLine),

@@ -21,6 +21,34 @@
 
   const keyboardObjectSelector =
     ".frontmatter-card, .table-scroll, .code-card, .diagram-card, .katex-display, .katex, img, hr:not(.footnotes-sep)";
+  const listItemBlockTags = new Set([
+    "address",
+    "article",
+    "aside",
+    "blockquote",
+    "div",
+    "dl",
+    "fieldset",
+    "figure",
+    "footer",
+    "form",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "hr",
+    "main",
+    "nav",
+    "ol",
+    "p",
+    "pre",
+    "section",
+    "table",
+    "ul",
+  ]);
 
   const textToolbar = makeTextToolbar();
   const objectToolbar = makeObjectToolbar();
@@ -1700,7 +1728,7 @@
     }
     if (tag === "p") return serializeChildrenInline(node).trim();
     if (tag === "blockquote") return serializeBlockquote(node);
-    if (tag === "ul" || tag === "ol") return serializeList(node, 0);
+    if (tag === "ul" || tag === "ol") return serializeList(node);
     if (node.matches(".code-card")) return serializeCodeCard(node);
     if (node.matches(".diagram-card")) return serializeDiagramCard(node);
     if (node.matches(".table-scroll") || tag === "table") return serializeTable(node);
@@ -1710,6 +1738,9 @@
     }
     if (tag === "hr") return node.classList.contains("footnotes-sep") ? "" : "---";
     if (tag === "section" && node.classList.contains("footnotes")) return serializeFootnotes(node);
+    if (tag === "div" && !hasDirectBlockChildren(node)) {
+      return serializeChildrenInline(node).trim();
+    }
     if (tag === "div" || tag === "section" || tag === "article") {
       return Array.from(node.childNodes)
         .map(serializeBlock)
@@ -1811,60 +1842,87 @@
       .join("\n");
   }
 
-  function serializeList(list, depth) {
-    const ordered = list.tagName.toLowerCase() === "ol";
-    const start = Number(list.getAttribute("start") || 1);
+  function serializeList(list) {
     return Array.from(list.children)
       .filter((item) => item.tagName && item.tagName.toLowerCase() === "li")
-      .map((item, index) => {
-        const checkbox = item.querySelector(
-          ':scope > input[type="checkbox"], :scope > p > input[type="checkbox"]'
-        );
-        const prefix = checkbox
-          ? "- [" + (checkbox.checked ? "x" : " ") + "] "
-          : ordered
-            ? start + index + ". "
-            : "- ";
-        const direct = Array.from(item.childNodes).filter(
-          (child) =>
-            !(
-              child.nodeType === Node.ELEMENT_NODE &&
-              (child.matches("ul, ol") ||
-                (child.matches("input") && child.type === "checkbox"))
-            )
-        );
-        let content = direct
-          .map((child) => {
-            if (
-              child.nodeType === Node.ELEMENT_NODE &&
-              child.tagName.toLowerCase() === "p"
-            ) {
-              return serializeChildrenInline(child).trim();
-            }
-            return child.nodeType === Node.TEXT_NODE
-              ? escapeText(child.nodeValue).trim()
-              : serializeBlock(child);
-          })
-          .filter(Boolean)
-          .join("\n\n");
-        const continuation = " ".repeat(prefix.length);
-        content = content
-          .split("\n")
-          .map((line, lineIndex) => (lineIndex ? continuation + line : line))
-          .join("\n");
-
-        const nested = Array.from(item.children).filter((child) => child.matches("ul, ol"));
-        const nestedText = nested
-          .map((child) =>
-            serializeList(child, depth + 1)
-              .split("\n")
-              .map((line) => "    " + line)
-              .join("\n")
-          )
-          .join("\n");
-        return prefix + content + (nestedText ? "\n" + nestedText : "");
-      })
+      .map((item, index) => serializeListItem(item, list, index))
       .join("\n");
+  }
+
+  function serializeListItem(item, list, index) {
+    const checkbox = item.querySelector(
+      ':scope > input[type="checkbox"], :scope > p > input[type="checkbox"]'
+    );
+    const ordered = list.tagName.toLowerCase() === "ol";
+    const start = Number(list.getAttribute("start") || 1);
+    const prefix = checkbox
+      ? "- [" + (checkbox.checked ? "x" : " ") + "] "
+      : ordered
+        ? start + index + ". "
+        : "- ";
+    const direct = Array.from(item.childNodes).filter(
+      (child) =>
+        !(
+          child.nodeType === Node.ELEMENT_NODE &&
+          (child.matches("ul, ol") ||
+            (child.matches("input") && child.type === "checkbox"))
+        )
+    );
+    let content = serializeListItemContent(direct);
+    const continuation = " ".repeat(prefix.length);
+    content = content
+      .split("\n")
+      .map((line, lineIndex) => (lineIndex ? continuation + line : line))
+      .join("\n");
+
+    const nested = Array.from(item.children).filter((child) => child.matches("ul, ol"));
+    const nestedText = nested
+      .map((child) =>
+        serializeList(child)
+          .split("\n")
+          .map((line) => "    " + line)
+          .join("\n")
+      )
+      .join("\n");
+    return prefix + content + (nestedText ? "\n" + nestedText : "");
+  }
+
+  function serializeListItemContent(nodes) {
+    const blocks = [];
+    let inline = "";
+    const flushInline = () => {
+      const value = inline.trim();
+      if (value) blocks.push(value);
+      inline = "";
+    };
+
+    nodes.forEach((node) => {
+      if (isInlineListItemNode(node)) {
+        inline += serializeInline(node);
+        return;
+      }
+      flushInline();
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      const value =
+        node.tagName.toLowerCase() === "p"
+          ? serializeChildrenInline(node).trim()
+          : serializeBlock(node).trim();
+      if (value) blocks.push(value);
+    });
+    flushInline();
+    return blocks.join("\n\n");
+  }
+
+  function isInlineListItemNode(node) {
+    if (node.nodeType === Node.TEXT_NODE) return true;
+    if (node.nodeType !== Node.ELEMENT_NODE) return false;
+    return !listItemBlockTags.has(node.tagName.toLowerCase());
+  }
+
+  function hasDirectBlockChildren(node) {
+    return Array.from(node.children).some((child) =>
+      listItemBlockTags.has(child.tagName.toLowerCase())
+    );
   }
 
   function serializeCodeCard(card) {
@@ -2077,8 +2135,73 @@
   function insertPlainTextAtSelection(text) {
     const selection = window.getSelection();
     if (!selectionInsideArticle(selection) || !selection.rangeCount) return false;
+    const originalBlock = selectionBlock(selection);
     const range = selection.getRangeAt(0);
     range.deleteContents();
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    const normalized = (text || "").replace(/\r\n?|\u0085|\u2028|\u2029/g, "\n");
+    let followsInsertedBreak = false;
+    normalized.split(/(\n+)/).forEach((part) => {
+      if (!part) return;
+      if (part[0] !== "\n") {
+        if (
+          !followsInsertedBreak ||
+          !document.execCommand("insertText", false, part)
+        ) {
+          insertPlainTextNodeAtSelection(part);
+        }
+        followsInsertedBreak = false;
+        return;
+      }
+      const command = part.length === 1 ? "insertLineBreak" : "insertParagraph";
+      document.execCommand(command, false, null);
+      followsInsertedBreak = true;
+    });
+    normalizePastedTopLevelBlocks();
+    if (
+      normalized &&
+      originalBlock &&
+      originalBlock.parentElement === article &&
+      !(originalBlock.textContent || "").trim() &&
+      !originalBlock.querySelector("br, img, input, table")
+    ) {
+      originalBlock.remove();
+    }
+    return true;
+  }
+
+  function normalizePastedTopLevelBlocks() {
+    Array.from(article.childNodes).forEach((node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        if (!(node.nodeValue || "").trim()) return;
+        const paragraph = document.createElement("p");
+        node.replaceWith(paragraph);
+        paragraph.appendChild(node);
+        return;
+      }
+      if (
+        node.nodeType !== Node.ELEMENT_NODE ||
+        node.tagName.toLowerCase() !== "div" ||
+        node.className ||
+        node.hasAttribute("contenteditable") ||
+        node.dataset.editorInsertMarkdown !== undefined ||
+        hasDirectBlockChildren(node)
+      ) {
+        return;
+      }
+      const paragraph = document.createElement("p");
+      while (node.firstChild) paragraph.appendChild(node.firstChild);
+      node.replaceWith(paragraph);
+    });
+  }
+
+  function insertPlainTextNodeAtSelection(text) {
+    const selection = window.getSelection();
+    if (!selectionInsideArticle(selection) || !selection.rangeCount) return false;
+    const range = selection.getRangeAt(0);
     const node = document.createTextNode(text);
     range.insertNode(node);
     range.setStartAfter(node);
@@ -2097,9 +2220,7 @@
     if (!plainText && types.length && !types.includes("text/plain")) return false;
 
     event.preventDefault();
-    if (!document.execCommand("insertText", false, plainText)) {
-      insertPlainTextAtSelection(plainText);
-    }
+    insertPlainTextAtSelection(plainText);
     scheduleChange(true, true);
     window.requestAnimationFrame(updateBlockInserter);
     return true;
@@ -2171,13 +2292,81 @@
       const found = currentMarkdown.indexOf(source, cursor);
       if (found < cursor) return;
       const sourceEnd = found + source.length;
-      const startLine = splitSourceLineForOffset(found, lineOffsets);
-      const endLine =
-        splitSourceLineForOffset(Math.max(found, sourceEnd - 1), lineOffsets) + 1;
-      block.dataset.previewmdSourceStart = String(startLine);
-      block.dataset.previewmdSourceEnd = String(endLine);
+      setSplitSourcePosition(block, found, sourceEnd, lineOffsets);
+      if (block.matches("ul, ol")) {
+        refreshSplitListSourcePositions(
+          block,
+          found,
+          sourceEnd,
+          lineOffsets,
+          0
+        );
+      }
       cursor = sourceEnd;
     });
+  }
+
+  function setSplitSourcePosition(element, sourceStart, sourceEnd, lineOffsets) {
+    const startLine = splitSourceLineForOffset(sourceStart, lineOffsets);
+    const endLine =
+      splitSourceLineForOffset(Math.max(sourceStart, sourceEnd - 1), lineOffsets) + 1;
+    element.dataset.previewmdSourceStart = String(startLine);
+    element.dataset.previewmdSourceEnd = String(endLine);
+  }
+
+  function refreshSplitListSourcePositions(
+    list,
+    sourceStart,
+    sourceEnd,
+    lineOffsets,
+    depth
+  ) {
+    const items = Array.from(list.children).filter(
+      (item) => item.tagName && item.tagName.toLowerCase() === "li"
+    );
+    let cursor = sourceStart;
+    items.forEach((item, index) => {
+      const itemSource = indentSplitListSource(
+        serializeListItem(item, list, index),
+        depth
+      );
+      const found = currentMarkdown.indexOf(itemSource, cursor);
+      const itemEnd = found + itemSource.length;
+      if (found < cursor || itemEnd > sourceEnd) return;
+      setSplitSourcePosition(item, found, itemEnd, lineOffsets);
+
+      let nestedCursor = found;
+      Array.from(item.children)
+        .filter((child) => child.matches("ul, ol"))
+        .forEach((nestedList) => {
+          const nestedSource = indentSplitListSource(
+            serializeList(nestedList),
+            depth + 1
+          );
+          const nestedFound = currentMarkdown.indexOf(nestedSource, nestedCursor);
+          const nestedEnd = nestedFound + nestedSource.length;
+          if (nestedFound < nestedCursor || nestedEnd > itemEnd) return;
+          setSplitSourcePosition(nestedList, nestedFound, nestedEnd, lineOffsets);
+          refreshSplitListSourcePositions(
+            nestedList,
+            nestedFound,
+            nestedEnd,
+            lineOffsets,
+            depth + 1
+          );
+          nestedCursor = nestedEnd;
+        });
+      cursor = itemEnd;
+    });
+  }
+
+  function indentSplitListSource(source, depth) {
+    const indentation = " ".repeat(Math.max(0, depth) * 4);
+    if (!indentation) return source;
+    return source
+      .split("\n")
+      .map((line) => indentation + line)
+      .join("\n");
   }
 
   function splitSourceBounds(element, lineOffsets) {
@@ -2440,7 +2629,7 @@
   }
 
   function currentSplitScrollPosition() {
-    const anchorY = Math.min(72, Math.max(24, window.innerHeight * 0.08));
+    const anchorY = splitScrollAnchor();
     const candidates = splitMappedElements()
       .map((element) => ({
         element,
@@ -2479,10 +2668,13 @@
         (anchorY - target.rect.top) / Math.max(1, target.rect.height)
       )
     );
+    const span = Math.max(1, target.endLine - target.startLine);
+    const lastLine = Math.max(target.startLine, target.endLine - 1);
     return {
-      sourceLine:
-        target.startLine +
-        ratio * Math.max(1, target.endLine - target.startLine),
+      sourceLine: Math.max(
+        target.startLine,
+        Math.min(lastLine, target.startLine + ratio * span - 0.5)
+      ),
     };
   }
 
@@ -2527,9 +2719,9 @@
     const span = Math.max(1, target.endLine - target.startLine);
     const ratio = Math.max(
       0,
-      Math.min(1, (sourceLine - target.startLine) / span)
+      Math.min(1, (sourceLine - target.startLine + 0.5) / span)
     );
-    const anchorY = Math.min(72, Math.max(24, window.innerHeight * 0.08));
+    const anchorY = splitScrollAnchor();
     const top =
       window.scrollY +
       target.rect.top +
@@ -2541,6 +2733,10 @@
     window.scrollTo(0, Math.max(0, top));
     document.documentElement.style.scrollBehavior = previousScrollBehavior;
     return true;
+  }
+
+  function splitScrollAnchor() {
+    return Math.max(0, window.innerHeight * 0.5);
   }
 
   function scheduleSplitSelectionPublication() {

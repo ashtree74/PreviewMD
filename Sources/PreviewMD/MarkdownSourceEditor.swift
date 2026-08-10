@@ -504,7 +504,7 @@ struct MarkdownSourceEditor: NSViewRepresentable {
             }
             let targetY = max(
                 0,
-                lineRect.minY + textView.textContainerOrigin.y
+                lineRect.midY + textView.textContainerOrigin.y
                     - scrollAnchor(
                         forViewportHeight: scrollView.contentView.bounds.height
                     )
@@ -550,7 +550,7 @@ struct MarkdownSourceEditor: NSViewRepresentable {
         }
 
         private func scrollAnchor(forViewportHeight height: CGFloat) -> CGFloat {
-            min(72, max(24, height * 0.08))
+            max(0, height * 0.5)
         }
 
         func scheduleHighlight() {

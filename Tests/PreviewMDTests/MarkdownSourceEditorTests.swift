@@ -212,11 +212,11 @@ final class MarkdownSourceEditorTests: XCTestCase {
             forGlyphAt: glyphIndex,
             effectiveRange: nil
         )
-        let anchor = min(72, max(24, scrollView.contentView.bounds.height * 0.08))
+        let anchor = scrollView.contentView.bounds.height * 0.5
         textView.scroll(
             NSPoint(
                 x: 0,
-                y: lineRect.minY + textView.textContainerOrigin.y - anchor
+                y: lineRect.midY + textView.textContainerOrigin.y - anchor
             )
         )
         scrollView.reflectScrolledClipView(scrollView.contentView)
