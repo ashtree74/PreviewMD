@@ -9,6 +9,7 @@
   let renderVersion = 0;
   let activeSearchText = "";
   let lastRenderOptions = null;
+  let printRestoreOptions = null;
 
   const escapeHtml = (value) =>
     value
@@ -16,6 +17,83 @@
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;");
+
+  function extractFrontmatter(markdown) {
+    const normalized = markdown || "";
+    const lines = normalized.split("\n");
+    if (lines[0] !== "---") return { body: normalized, html: "" };
+
+    const closingIndex = lines.slice(1).findIndex((line) => line.trim() === "---");
+    if (closingIndex < 0) return { body: normalized, html: "" };
+    const end = closingIndex + 1;
+    const source = lines.slice(0, end + 1).join("\n");
+    const fields = lines.slice(1, end);
+    const rows = fields
+      .map((line) => {
+        const match = line.match(/^([A-Za-z0-9_.-]+):\s*(.*)$/);
+        if (!match) return "";
+        const rawValue = match[2].trim();
+        const value = rawValue.replace(/^(\"|')(.*)\1$/, "$2");
+        return (
+          '<div class="frontmatter-row"><dt>' +
+          escapeHtml(match[1]) +
+          "</dt><dd>" +
+          escapeHtml(value || "—") +
+          "</dd></div>"
+        );
+      })
+      .filter(Boolean)
+      .join("");
+    const fallback = fields.length
+      ? '<pre class="frontmatter-raw">' + escapeHtml(fields.join("\n")) + "</pre>"
+      : "";
+    return {
+      body: lines.slice(end + 1).join("\n").replace(/^\n/, ""),
+      html:
+        '<aside class="frontmatter-card" contenteditable="false" data-frontmatter-source="' +
+        encodeURIComponent(source) +
+        '"><div class="frontmatter-label">Document metadata</div><dl>' +
+        (rows || fallback) +
+        "</dl></aside>",
+    };
+  }
+
+  const customVariableNames = [
+    "--font-body",
+    "--font-display",
+    "--body-size",
+    "--body-leading",
+    "--accent",
+    "--page",
+    "--ink",
+  ];
+
+  function applyCustomPreset(preset, isDark) {
+    customVariableNames.forEach((name) => root.style.removeProperty(name));
+    if (!preset) return;
+    root.style.setProperty("--font-body", fontFamily(preset.bodyFont));
+    root.style.setProperty("--font-display", fontFamily(preset.headingFont));
+    root.style.setProperty("--body-size", Number(preset.bodySize || 16) + "px");
+    root.style.setProperty("--body-leading", Number(preset.lineHeight || 1.68));
+    root.style.setProperty("--accent", preset.accentHex || "#5B5CE2");
+    root.style.setProperty(
+      "--page",
+      isDark ? preset.darkPageHex || "#1D1E22" : preset.lightPageHex || "#FFFFFF"
+    );
+    root.style.setProperty(
+      "--ink",
+      isDark ? preset.darkInkHex || "#ECECF1" : preset.lightInkHex || "#24262D"
+    );
+  }
+
+  function fontFamily(value) {
+    return {
+      system: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif',
+      rounded: 'ui-rounded, "SF Pro Rounded", -apple-system, sans-serif',
+      serif: '"New York", "Iowan Old Style", Charter, Georgia, ui-serif, serif',
+      mono: '"SFMono-Regular", "SF Mono", ui-monospace, Menlo, monospace',
+    }[value] || '-apple-system, BlinkMacSystemFont, sans-serif';
+  }
 
   /// Builds the card for one fenced or indented code block.
   ///
@@ -287,6 +365,13 @@
 
   md.renderer.rules.image = function (tokens, index, options, env, self) {
     const source = tokens[index].attrGet("src") || "";
+    if (
+      /^https?:\/\/(?:img\.)?shields\.io\//i.test(source) ||
+      /^https?:\/\/(?:badgen\.net|badge\.fury\.io)\//i.test(source) ||
+      /\/badge\.svg(?:[?#]|$)/i.test(source)
+    ) {
+      tokens[index].attrJoin("class", "markdown-badge");
+    }
     const routedSource = routedImageSource(source);
     if (routedSource !== source) {
       tokens[index].attrSet("data-previewmd-source", source);
@@ -533,8 +618,9 @@
     const target = document.getElementById(targetID);
     target && target.scrollIntoView({ behavior: "smooth", block: "start" });
   };
-  window.previewmdSetLayout = function (readingWidth, paperCanvas, topInset) {
+  window.previewmdSetLayout = function (readingWidth, paperCanvas, topInset, fluidWidth) {
     root.dataset.paper = paperCanvas ? "true" : "false";
+    root.dataset.width = fluidWidth ? "fluid" : "fixed";
     root.style.setProperty("--reading-width", readingWidth + "px");
     root.style.setProperty("--top-inset", (topInset || 0) + "px");
     window.requestAnimationFrame(enhanceTables);
@@ -549,16 +635,23 @@
 
     root.dataset.theme = isDark ? "dark" : "light";
     root.dataset.style = options.readingStyle || "modern";
+    applyCustomPreset(
+      options.readingStyle === "custom" ? options.customReadingPreset : null,
+      isDark
+    );
     window.previewmdSetLayout(
       options.readingWidth,
       options.paperCanvas,
-      options.topInset
+      options.topInset,
+      options.readingWidthIsFluid === true
     );
     activeSearchText = options.searchText || "";
     errorBox.hidden = true;
 
     try {
-      article.innerHTML = md.render(options.markdown || "", { headingIndex: 0 });
+      const frontmatter = extractFrontmatter(options.markdown || "");
+      article.innerHTML =
+        frontmatter.html + md.render(frontmatter.body, { headingIndex: 0 });
       enhanceTables();
       enhanceTaskLists();
       enhanceAlerts();
@@ -586,5 +679,29 @@
     if (!lastRenderOptions) return;
     const options = Object.assign({}, lastRenderOptions, { markdown: markdown });
     window.previewmdRender(options);
+  };
+
+  window.previewmdPreparePrint = async function (options) {
+    if (!lastRenderOptions) return;
+    printRestoreOptions = Object.assign({}, lastRenderOptions);
+    const printOptions = Object.assign({}, lastRenderOptions, {
+      editable: false,
+      theme: options.theme || "light",
+      readingStyle: options.style || "modern",
+      customReadingPreset: options.customPreset || null,
+      paperCanvas: false,
+      readingWidthIsFluid: true,
+      topInset: 0,
+      searchText: "",
+      outlineTarget: null,
+    });
+    await window.previewmdRender(printOptions);
+  };
+
+  window.previewmdFinishPrint = async function () {
+    if (!printRestoreOptions) return;
+    const restore = printRestoreOptions;
+    printRestoreOptions = null;
+    await window.previewmdRender(restore);
   };
 })();

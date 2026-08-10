@@ -202,6 +202,14 @@ struct PreviewMDCommands: Commands {
             .disabled(!state.canRedoCurrent)
         }
 
+        CommandGroup(replacing: .printItem) {
+            Button("Print…") {
+                state.printCurrent()
+            }
+            .keyboardShortcut("p")
+            .disabled(state.currentDocument == nil || state.displayMode == .source)
+        }
+
         CommandGroup(after: .printItem) {
             Button("Close Tab") {
                 state.closeCurrentTab()
@@ -242,6 +250,10 @@ struct PreviewMDCommands: Commands {
                 }
             }
             .disabled(state.isFocusMode)
+
+            Button("Next Reading Style") {
+                state.cycleReadingStyle()
+            }
 
             Divider()
 

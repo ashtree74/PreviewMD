@@ -56,6 +56,33 @@ final class RendererStylesTests: XCTestCase {
         XCTAssertTrue(cellsRule.contains("word-break: normal;"))
     }
 
+    func testFluidWidthTracksTheWindowInsteadOfPixelPreset() throws {
+        let css = try rendererCSS()
+        let rule = try declarations(
+            after: #":root[data-width="fluid"] #preview-document"#,
+            in: css
+        )
+
+        XCTAssertTrue(rule.contains("width: 100%;"))
+        XCTAssertTrue(rule.contains("max-width: none;"))
+    }
+
+    func testBadgesAreCompactInlineImages() throws {
+        let css = try rendererCSS()
+        let rule = try declarations(after: "img.markdown-badge", in: css)
+
+        XCTAssertTrue(rule.contains("display: inline-block;"))
+        XCTAssertTrue(rule.contains("height: 20px;"))
+        XCTAssertTrue(rule.contains("box-shadow: none;"))
+    }
+
+    func testPrintColorsFollowExplicitExportTheme() throws {
+        let css = try rendererCSS()
+        XCTAssertTrue(css.contains(#":root[data-theme="light"]"#))
+        XCTAssertTrue(css.contains("background: var(--page);"))
+        XCTAssertFalse(css.contains("body,\n  #preview-shell {\n    background: white;"))
+    }
+
     private func rendererCSS() throws -> String {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

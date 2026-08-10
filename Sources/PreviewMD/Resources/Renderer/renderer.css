@@ -205,6 +205,16 @@ body {
   transition: width 180ms ease, background 180ms ease, box-shadow 180ms ease;
 }
 
+:root[data-width="fluid"] #preview-shell {
+  padding-right: clamp(16px, 3vw, 48px);
+  padding-left: clamp(16px, 3vw, 48px);
+}
+
+:root[data-width="fluid"] #preview-document {
+  width: 100%;
+  max-width: none;
+}
+
 :root[data-paper="false"] #preview-shell {
   background: var(--page);
 }
@@ -732,6 +742,71 @@ img {
   margin: 1.6em auto;
   border-radius: 10px;
   box-shadow: 0 5px 24px rgba(25, 31, 48, 0.09);
+}
+
+img.markdown-badge {
+  display: inline-block;
+  width: auto;
+  max-width: 100%;
+  height: 20px;
+  margin: 0.12em 0.18em 0.12em 0;
+  border-radius: 3px;
+  box-shadow: none;
+  vertical-align: middle;
+}
+
+.frontmatter-card {
+  display: block;
+  margin: 0 0 2.2em;
+  padding: 0.9em 1em 0.95em;
+  overflow: hidden;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--code-bg) 72%, var(--page));
+  font-size: 0.82em;
+}
+
+.frontmatter-label {
+  margin-bottom: 0.65em;
+  color: var(--faint);
+  font-size: 0.76em;
+  font-weight: 700;
+  letter-spacing: 0.075em;
+  text-transform: uppercase;
+}
+
+.frontmatter-card dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.55em 1.25em;
+  margin: 0;
+}
+
+.frontmatter-row {
+  min-width: 0;
+}
+
+.frontmatter-row dt {
+  margin: 0 0 0.1em;
+  color: var(--faint);
+  font-size: 0.78em;
+  font-weight: 650;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+}
+
+.frontmatter-row dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+}
+
+.frontmatter-raw {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
 }
 
 .diagram-card {
@@ -1449,7 +1524,11 @@ th.editor-selected-object {
 }
 
 @media print {
-  :root {
+  @page {
+    margin: 0;
+  }
+
+  :root[data-theme="light"] {
     --page: white;
     --canvas: white;
     --ink: #1e2026;
@@ -1458,8 +1537,12 @@ th.editor-selected-object {
   }
 
   body,
-  #preview-shell {
-    background: white;
+  #preview-shell,
+  #preview-document {
+    color: var(--ink);
+    background: var(--page);
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 
   #preview-shell {
@@ -1515,6 +1598,10 @@ th.editor-selected-object {
   .editor-block-inserter,
   .editor-markdown-composer {
     display: none !important;
+  }
+
+  .frontmatter-card {
+    break-inside: avoid;
   }
 
   h1,

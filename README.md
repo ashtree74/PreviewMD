@@ -4,22 +4,25 @@ A native macOS Markdown reader with a print-inspired preview, editing, tabs, out
 
 ## Highlights
 
-- GitHub Flavored Markdown, tables, task lists, alerts, and footnotes
-- Direct rich-text editing in the rendered document
+- GitHub Flavored Markdown, tables, task lists, alerts, footnotes, and compact Shields badges
+- Direct rich-text editing in the rendered document, including Markdown typing shortcuts
+- Frontmatter metadata rendered as an editable card above the document title
 - A contextual selection toolbar for text, links, images, tables, code, diagrams, and math
 - A left-margin `+` menu on empty lines for inserting every supported Markdown block
 - Mermaid diagrams and charts
 - KaTeX inline and display math
 - Syntax highlighting with copy buttons
-- Preview, source, and live split modes
+- Preview, syntax-colored source, and live split modes with native line wrapping
 - A focus mode that strips every control except the page and the width ruler
 - Tabs, recent files, pinning, drag and drop, local images and relative links
-- A live 560–1600 px reading-width ruler with a one-click table/data layout
-- Modern, Classic, and Editorial reading styles with offline system typography
+- Automatic disk updates for files changed by external editors, with protection for unsaved work
+- Fixed reading widths and a fluid Window mode that follows all available space
+- Modern, Classic, Editorial, and named custom reading styles with offline system typography
 - Native macOS sidebar, toolbar, menus, keyboard shortcuts, and dark mode
-- Folder workspaces with a collapsible Markdown file tree in the sidebar
+- Sidebar tabs for recent files, a folder tree, and a sortable recursive file list
 - Finder Quick Look previews for Markdown files after installation
-- Narrow, comfortable, wide, and table presets, plus optional paper canvas
+- A4, Letter, Legal, and A5 PDF export with orientation, margins, style, and light/dark appearance
+- Printing that always uses a legible light appearance
 - Fully offline rendering
 
 ## Run
@@ -113,6 +116,7 @@ then signed, notarized, stapled, and assessed by Gatekeeper as a second check.
 | Bold / italic / link | `⌘B` / `⌘I` / `⌘K` |
 | Find in preview | `⌘F` |
 | Export PDF | `⌘⇧E` |
+| Next reading style | `⌘⌥T` |
 | Focus mode | `⌘⇧F` |
 | Toggle outline | `⌘⌥I` |
 | Close tab | `⌘W` |

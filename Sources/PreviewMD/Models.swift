@@ -99,10 +99,11 @@ enum PreviewTheme: String, CaseIterable, Identifiable {
     }
 }
 
-enum ReadingStyle: String, CaseIterable, Identifiable {
+enum ReadingStyle: String, CaseIterable, Codable, Identifiable {
     case modern
     case classic
     case editorial
+    case custom
 
     var id: String { rawValue }
 
@@ -111,6 +112,7 @@ enum ReadingStyle: String, CaseIterable, Identifiable {
         case .modern: "Modern"
         case .classic: "Classic"
         case .editorial: "Editorial"
+        case .custom: "Custom"
         }
     }
 
@@ -119,6 +121,7 @@ enum ReadingStyle: String, CaseIterable, Identifiable {
         case .modern: "Clean system typography"
         case .classic: "Warm, literary serif"
         case .editorial: "Serif headlines, crisp body"
+        case .custom: "Your saved reading preset"
         }
     }
 
@@ -127,7 +130,93 @@ enum ReadingStyle: String, CaseIterable, Identifiable {
         case .modern: "textformat"
         case .classic: "character.book.closed"
         case .editorial: "newspaper"
+        case .custom: "paintpalette"
         }
+    }
+}
+
+enum ReadingFont: String, CaseIterable, Codable, Identifiable {
+    case system
+    case rounded
+    case serif
+    case mono
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: "System Sans"
+        case .rounded: "Rounded Sans"
+        case .serif: "System Serif"
+        case .mono: "Monospaced"
+        }
+    }
+
+    var cssFamily: String {
+        switch self {
+        case .system:
+            #"-apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif"#
+        case .rounded:
+            #"ui-rounded, "SF Pro Rounded", -apple-system, sans-serif"#
+        case .serif:
+            #""New York", "Iowan Old Style", Charter, Georgia, ui-serif, serif"#
+        case .mono:
+            #""SFMono-Regular", "SF Mono", ui-monospace, Menlo, monospace"#
+        }
+    }
+}
+
+struct CustomReadingPreset: Codable, Identifiable, Equatable {
+    var id: UUID
+    var name: String
+    var bodyFont: ReadingFont
+    var headingFont: ReadingFont
+    var bodySize: Double
+    var lineHeight: Double
+    var accentHex: String
+    var lightPageHex: String
+    var lightInkHex: String
+    var darkPageHex: String
+    var darkInkHex: String
+
+    static var starter: CustomReadingPreset {
+        CustomReadingPreset(
+            id: UUID(),
+            name: "My Style",
+            bodyFont: .system,
+            headingFont: .serif,
+            bodySize: 16,
+            lineHeight: 1.68,
+            accentHex: "#5B5CE2",
+            lightPageHex: "#FFFFFF",
+            lightInkHex: "#24262D",
+            darkPageHex: "#1D1E22",
+            darkInkHex: "#ECECF1"
+        )
+    }
+
+    var normalized: CustomReadingPreset {
+        var copy = self
+        copy.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if copy.name.isEmpty { copy.name = "My Style" }
+        copy.bodySize = min(22, max(13, bodySize))
+        copy.lineHeight = min(2.0, max(1.25, lineHeight))
+        copy.accentHex = Self.validHex(accentHex, fallback: "#5B5CE2")
+        copy.lightPageHex = Self.validHex(lightPageHex, fallback: "#FFFFFF")
+        copy.lightInkHex = Self.validHex(lightInkHex, fallback: "#24262D")
+        copy.darkPageHex = Self.validHex(darkPageHex, fallback: "#1D1E22")
+        copy.darkInkHex = Self.validHex(darkInkHex, fallback: "#ECECF1")
+        return copy
+    }
+
+    private static func validHex(_ value: String, fallback: String) -> String {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let candidate = normalized.hasPrefix("#") ? normalized : "#\(normalized)"
+        guard candidate.range(
+            of: #"^#[0-9A-F]{6}$"#,
+            options: .regularExpression
+        ) != nil else { return fallback }
+        return candidate
     }
 }
 
@@ -136,6 +225,7 @@ enum ReadingWidth: String, CaseIterable, Identifiable {
     case comfortable
     case wide
     case data
+    case fullWidth
     case custom
 
     var id: String { rawValue }
@@ -146,6 +236,7 @@ enum ReadingWidth: String, CaseIterable, Identifiable {
         case .comfortable: "Comfortable"
         case .wide: "Wide"
         case .data: "Table / Data"
+        case .fullWidth: "Window"
         case .custom: "Custom"
         }
     }
@@ -156,6 +247,7 @@ enum ReadingWidth: String, CaseIterable, Identifiable {
         case .comfortable: 820
         case .wide: 1060
         case .data: 1440
+        case .fullWidth: 1600
         case .custom: 820
         }
     }
@@ -166,9 +258,42 @@ enum ReadingWidth: String, CaseIterable, Identifiable {
         case .comfortable: "doc.text"
         case .wide: "arrow.left.and.right"
         case .data: "tablecells"
+        case .fullWidth: "arrow.left.and.right.square"
         case .custom: "slider.horizontal.3"
         }
     }
+}
+
+enum SidebarMode: String, CaseIterable, Identifiable {
+    case recent
+    case tree
+    case files
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .recent: "Recent"
+        case .tree: "Folder"
+        case .files: "All Files"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .recent: "clock.arrow.circlepath"
+        case .tree: "folder"
+        case .files: "doc.text.magnifyingglass"
+        }
+    }
+}
+
+enum WorkspaceFileSort: String, CaseIterable, Identifiable {
+    case name
+    case modified
+
+    var id: String { rawValue }
+    var title: String { self == .name ? "Name" : "Modified" }
 }
 
 struct MarkdownDocument: Identifiable, Equatable {
@@ -191,6 +316,7 @@ struct MarkdownDocument: Identifiable, Equatable {
     var fileModifiedAt: Date?
     var isPinned: Bool
     var isSample: Bool
+    var hasExternalChanges = false
 
     var isDirty: Bool {
         content != lastSavedContent

@@ -15,7 +15,7 @@
   let imagePickerPending = false;
 
   const keyboardObjectSelector =
-    ".table-scroll, .code-card, .diagram-card, .katex-display, .katex, img, hr:not(.footnotes-sep)";
+    ".frontmatter-card, .table-scroll, .code-card, .diagram-card, .katex-display, .katex, img, hr:not(.footnotes-sep)";
 
   const textToolbar = makeTextToolbar();
   const objectToolbar = makeObjectToolbar();
@@ -176,6 +176,7 @@
         "Advanced",
         [
           ["footnote", "¹", "Footnote"],
+          ["frontmatter", "YML", "Frontmatter"],
           ["raw-markdown", "MD", "Markdown block"],
         ]
       ) +
@@ -359,6 +360,21 @@
     if (action === "raw-markdown") {
       openMarkdownComposer(target);
       return null;
+    }
+    if (action === "frontmatter") {
+      const markdown = flushEditor();
+      if (/^---\n/.test(markdown)) {
+        window.alert("This document already has frontmatter.");
+        return null;
+      }
+      const next =
+        "---\ntitle: \"Document title\"\ndate: " +
+        new Date().toISOString().slice(0, 10) +
+        "\nstatus: draft\n---\n\n" +
+        markdown.replace(/^\s+/, "");
+      hideBlockInserter();
+      if (window.previewmdRefreshEditor) window.previewmdRefreshEditor(next);
+      return next;
     }
     if (action === "image") {
       return requestNativeImage(target);
@@ -1076,7 +1092,7 @@
       });
     article
       .querySelectorAll(
-        ".code-card, .diagram-card, img, .katex, hr, .footnote-backref"
+        ".frontmatter-card, .code-card, .diagram-card, img, .katex, hr, .footnote-backref"
       )
       .forEach((node) => node.setAttribute("contenteditable", "false"));
     article.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => {
@@ -1362,7 +1378,14 @@
       ].includes(action);
       button.hidden = tableAction && type !== "table";
       if (action === "edit") {
-        button.hidden = !["image", "code", "diagram", "math", "link"].includes(type);
+        button.hidden = ![
+          "frontmatter",
+          "image",
+          "code",
+          "diagram",
+          "math",
+          "link",
+        ].includes(type);
       }
     });
 
@@ -1378,6 +1401,7 @@
 
   function objectType(node) {
     if (!node) return "object";
+    if (node.matches(".frontmatter-card")) return "frontmatter";
     if (node.matches("td, th, .table-scroll")) return "table";
     if (node.matches("img")) return "image";
     if (node.matches(".code-card")) return "code";
@@ -1390,6 +1414,7 @@
 
   function objectLabel(type) {
     return {
+      frontmatter: "Frontmatter",
       table: "Table",
       image: "Image",
       code: "Code",
@@ -1469,7 +1494,7 @@
         node.remove();
       }
       scheduleChange(true, true);
-    } else if (type === "code" || type === "diagram") {
+    } else if (type === "code" || type === "diagram" || type === "frontmatter") {
       openObjectSourceEditor(node, type);
     } else if (type === "math") {
       const katex = node.matches(".katex") ? node : node.querySelector(".katex");
@@ -1487,7 +1512,9 @@
     const existing = node.querySelector(".editor-object-source");
     if (existing) return;
     const source =
-      type === "diagram"
+      type === "frontmatter"
+        ? decodeURIComponent(node.dataset.frontmatterSource || "")
+        : type === "diagram"
         ? node.querySelector(".mermaid").dataset.source || node.querySelector(".mermaid").textContent
         : node.querySelector("code").textContent;
     const language =
@@ -1507,7 +1534,7 @@
       "</div>" +
       '<textarea aria-label="Source" spellcheck="false"></textarea>';
     panel.querySelector(".editor-object-language").value = language;
-    panel.querySelector(".editor-object-language").hidden = type === "diagram";
+    panel.querySelector(".editor-object-language").hidden = type !== "code";
     panel.querySelector("textarea").value = source;
     node.appendChild(panel);
     objectToolbar.hidden = true;
@@ -1519,7 +1546,12 @@
     });
     panel.querySelector("[data-source-apply]").addEventListener("click", () => {
       const nextSource = panel.querySelector("textarea").value;
-      if (type === "diagram") {
+      if (type === "frontmatter") {
+        let normalized = nextSource.trim();
+        if (!normalized.startsWith("---")) normalized = "---\n" + normalized;
+        if (!normalized.endsWith("---")) normalized += "\n---";
+        node.dataset.frontmatterSource = encodeURIComponent(normalized);
+      } else if (type === "diagram") {
         const mermaid = node.querySelector(".mermaid");
         mermaid.dataset.source = nextSource;
         mermaid.textContent = nextSource;
@@ -1611,6 +1643,9 @@
     if (node.matches(".editor-object-source, .code-toolbar, .diagram-label")) return "";
     if (node.dataset.editorInsertMarkdown !== undefined) {
       return node.dataset.editorInsertMarkdown;
+    }
+    if (node.matches(".frontmatter-card")) {
+      return decodeURIComponent(node.dataset.frontmatterSource || "");
     }
 
     const tag = node.tagName.toLowerCase();
@@ -1867,7 +1902,123 @@
       .join("\n\n");
   }
 
+  function handleMarkdownTypingShortcut(event) {
+    if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return false;
+    if (event.key !== " " && event.key !== "Enter") return false;
+    const selection = window.getSelection();
+    if (!selectionInsideArticle(selection) || !selection.isCollapsed || !selection.rangeCount) {
+      return false;
+    }
+    const block = selectionBlock(selection);
+    if (!block || block.tagName.toLowerCase() !== "p" || block.parentElement !== article) {
+      return false;
+    }
+    const range = selection.getRangeAt(0);
+    if (!isCaretAtDOMEdge(range, block, true)) return false;
+    const marker = (block.textContent || "").trim();
+
+    if (event.key === "Enter" && (/^```[A-Za-z0-9_-]*$/.test(marker) || marker === "---")) {
+      event.preventDefault();
+      const snippet = marker === "---" ? "---" : marker + "\n\n```";
+      replaceEmptyLineWithMarkdown(block, snippet);
+      return true;
+    }
+    if (event.key !== " ") return false;
+
+    let replacement = null;
+    let caretTarget = null;
+    const heading = marker.match(/^(#{1,6})$/);
+    if (heading) {
+      replacement = document.createElement("h" + heading[1].length);
+      caretTarget = replacement;
+    } else if (marker === ">") {
+      replacement = document.createElement("blockquote");
+      const paragraph = document.createElement("p");
+      replacement.appendChild(paragraph);
+      caretTarget = paragraph;
+    } else if (["-", "*", "+", "1."].includes(marker)) {
+      replacement = document.createElement(marker === "1." ? "ol" : "ul");
+      const item = document.createElement("li");
+      replacement.appendChild(item);
+      caretTarget = item;
+    } else if (/^- \[[ xX]\]$/.test(marker)) {
+      replacement = document.createElement("ul");
+      replacement.className = "task-list";
+      const item = document.createElement("li");
+      item.className = "task-list-item";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = /[xX]/.test(marker);
+      checkbox.setAttribute(
+        "aria-label",
+        checkbox.checked ? "Completed" : "Not completed"
+      );
+      item.appendChild(checkbox);
+      replacement.appendChild(item);
+      caretTarget = item;
+    }
+
+    if (!replacement || !caretTarget) return false;
+    event.preventDefault();
+    caretTarget.appendChild(document.createElement("br"));
+    block.replaceWith(replacement);
+    placeCaretAtStart(caretTarget);
+    scheduleChange(true, true);
+    return true;
+  }
+
+  function handleInlineMarkdownTypingShortcut() {
+    const selection = window.getSelection();
+    if (!selectionInsideArticle(selection) || !selection.isCollapsed || !selection.rangeCount) {
+      return false;
+    }
+    const textNode = selection.anchorNode;
+    if (!textNode || textNode.nodeType !== Node.TEXT_NODE) return false;
+    const parent = textNode.parentElement;
+    if (
+      !parent ||
+      parent.closest("a, code, pre, [contenteditable='false'], .frontmatter-card")
+    ) {
+      return false;
+    }
+
+    const prefix = textNode.nodeValue.slice(0, selection.anchorOffset);
+    const patterns = [
+      { expression: /\[([^\]\n]+)\]\(([^)\s]+)\)$/, tag: "a" },
+      { expression: /\*\*([^*\n]+)\*\*$/, tag: "strong" },
+      { expression: /__([^_\n]+)__$/, tag: "strong" },
+      { expression: /~~([^~\n]+)~~$/, tag: "s" },
+      { expression: /`([^`\n]+)`$/, tag: "code" },
+      { expression: /\*([^*\n]+)\*$/, tag: "em" },
+      { expression: /_([^_\n]+)_$/, tag: "em" },
+    ];
+
+    for (const pattern of patterns) {
+      const match = prefix.match(pattern.expression);
+      if (!match) continue;
+      const start = match.index;
+      if (start > 0 && !/[\s([{"'“‘]/.test(prefix[start - 1])) continue;
+      if (
+        pattern.tag === "a" &&
+        /^\s*(?:javascript|data|vbscript):/i.test(match[2])
+      ) {
+        return false;
+      }
+
+      const token = textNode.splitText(start);
+      token.splitText(match[0].length);
+      const element = document.createElement(pattern.tag);
+      element.textContent = match[1];
+      if (pattern.tag === "a") element.setAttribute("href", match[2]);
+      token.replaceWith(element);
+      placeCaretBesideObject(element, true);
+      return true;
+    }
+    return false;
+  }
+
   article.addEventListener("input", () => {
+    handleInlineMarkdownTypingShortcut();
     scheduleChange(false, false);
     window.requestAnimationFrame(updateBlockInserter);
   });
@@ -1880,7 +2031,7 @@
     if (anchor) event.preventDefault();
 
     const object = event.target.closest(
-      "td, th, img, .code-card, .diagram-card, .katex-display, .katex, hr:not(.footnotes-sep), a"
+      ".frontmatter-card, td, th, img, .code-card, .diagram-card, .katex-display, .katex, hr:not(.footnotes-sep), a"
     );
     const selection = window.getSelection();
     if (object && (!selection || selection.isCollapsed)) {
@@ -1892,6 +2043,10 @@
   });
   article.addEventListener("keydown", (event) => {
     if (!editable) return;
+    if (handleMarkdownTypingShortcut(event)) {
+      window.requestAnimationFrame(updateBlockInserter);
+      return;
+    }
     const modifier = event.metaKey || event.ctrlKey;
     if (modifier && event.key.toLowerCase() === "b") {
       event.preventDefault();

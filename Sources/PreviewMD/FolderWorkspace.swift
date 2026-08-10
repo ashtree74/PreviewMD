@@ -3,10 +3,16 @@ import Foundation
 struct FolderTreeItem: Identifiable, Equatable, Sendable {
     let url: URL
     let children: [FolderTreeItem]?
+    let modificationDate: Date?
 
     var id: String { url.standardizedFileURL.path }
     var title: String { url.lastPathComponent }
     var isDirectory: Bool { children != nil }
+
+    var flattenedFiles: [FolderTreeItem] {
+        guard let children else { return [self] }
+        return children.flatMap(\.flattenedFiles)
+    }
 }
 
 enum MarkdownFolderTree {
@@ -16,6 +22,7 @@ enum MarkdownFolderTree {
         .isSymbolicLinkKey,
         .isHiddenKey,
         .isPackageKey,
+        .contentModificationDateKey,
     ]
 
     static func contents(of rootURL: URL) throws -> [FolderTreeItem] {
@@ -62,11 +69,23 @@ enum MarkdownFolderTree {
 
                 let nested = try children(of: url)
                 if !nested.isEmpty {
-                    directories.append(FolderTreeItem(url: url, children: nested))
+                    directories.append(
+                        FolderTreeItem(
+                            url: url,
+                            children: nested,
+                            modificationDate: values.contentModificationDate
+                        )
+                    )
                 }
             } else if (values.isRegularFile == true || values.isSymbolicLink == true),
                       MarkdownFileSupport.accepts(url) {
-                files.append(FolderTreeItem(url: url, children: nil))
+                files.append(
+                    FolderTreeItem(
+                        url: url,
+                        children: nil,
+                        modificationDate: values.contentModificationDate
+                    )
+                )
             }
         }
 

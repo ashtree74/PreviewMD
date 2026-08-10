@@ -134,6 +134,12 @@ struct WorkspaceView: View {
         .onChange(of: state.usesPaperCanvas) {
             state.updatePreferences()
         }
+        .onChange(of: state.selectedCustomPresetID) {
+            state.updatePreferences()
+        }
+        .onChange(of: state.liveReloadEnabled) {
+            state.updatePreferences()
+        }
         .onChange(of: state.selectedDocumentID) {
             NSApplication.shared.mainWindow?.title = state.currentDocument?.title ?? "PreviewMD"
             if state.currentDocument == nil {
@@ -144,6 +150,10 @@ struct WorkspaceView: View {
             if state.workspaceFolderURL != nil, !state.isFocusMode {
                 columnVisibility = .all
             }
+        }
+        .sheet(item: $state.editingCustomPreset) { preset in
+            CustomStyleEditor(initialPreset: preset)
+                .environmentObject(state)
         }
     }
 
@@ -617,35 +627,97 @@ private struct ToolbarUtilities: View {
     var body: some View {
         ControlGroup {
             Menu {
-                Picker("Style", selection: $state.readingStyle) {
-                    ForEach(ReadingStyle.allCases) { style in
-                        Label(style.title, systemImage: style.symbol).tag(style)
+                Section("Reading style") {
+                    ForEach(ReadingStyle.allCases.filter { $0 != .custom }) { style in
+                        Button {
+                            state.readingStyle = style
+                        } label: {
+                            Label(
+                                style.title,
+                                systemImage: state.readingStyle == style
+                                    ? "checkmark"
+                                    : style.symbol
+                            )
+                        }
                     }
+                }
+
+                if !state.customReadingPresets.isEmpty {
+                    Section("Custom presets") {
+                        ForEach(state.customReadingPresets) { preset in
+                            Button {
+                                state.selectedCustomPresetID = preset.id
+                                state.readingStyle = .custom
+                            } label: {
+                                Label(
+                                    preset.name,
+                                    systemImage: state.readingStyle == .custom
+                                        && state.selectedCustomPresetID == preset.id
+                                        ? "checkmark"
+                                        : "paintpalette"
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Section {
+                    Button("New Custom Style…") {
+                        state.beginNewCustomPreset()
+                    }
+                    if let preset = state.activeCustomReadingPreset {
+                        Button("Edit “\(preset.name)”…") {
+                            state.beginEditingCustomPreset(preset)
+                        }
+                    }
+                    Button("Next Style", systemImage: "arrow.triangle.2.circlepath") {
+                        state.cycleReadingStyle()
+                    }
+                    .keyboardShortcut("t", modifiers: [.command, .option])
                 }
 
                 Divider()
 
-                Picker("Theme", selection: $state.theme) {
+                Menu {
                     ForEach(PreviewTheme.allCases) { theme in
-                        Label(theme.title, systemImage: theme.symbol).tag(theme)
+                        Button {
+                            state.theme = theme
+                        } label: {
+                            Label(
+                                theme.title,
+                                systemImage: state.theme == theme
+                                    ? "checkmark"
+                                    : theme.symbol
+                            )
+                        }
                     }
+                } label: {
+                    Label("Theme", systemImage: state.theme.symbol)
                 }
 
                 Divider()
 
-                Picker("Reading width", selection: $state.readingWidth) {
+                Menu {
                     ForEach(ReadingWidth.allCases) { width in
-                        Label(
-                            width == .custom
-                                ? "Custom — \(Int(state.customReadingWidth)) px"
-                                : width.title,
-                            systemImage: width.symbol
-                        )
-                        .tag(width)
+                        Button {
+                            state.readingWidth = width
+                        } label: {
+                            Label(
+                                width == .custom
+                                    ? "Custom — \(Int(state.customReadingWidth)) px"
+                                    : width.title,
+                                systemImage: state.readingWidth == width
+                                    ? "checkmark"
+                                    : width.symbol
+                            )
+                        }
                     }
+                } label: {
+                    Label("Reading width", systemImage: state.readingWidth.symbol)
                 }
 
                 Toggle("Paper canvas", isOn: $state.usesPaperCanvas)
+                Toggle("Reload changes automatically", isOn: $state.liveReloadEnabled)
 
                 Divider()
 
@@ -721,6 +793,144 @@ private struct ToolbarUtilities: View {
     }
 }
 
+private struct CustomStyleEditor: View {
+    @EnvironmentObject private var state: AppState
+    @Environment(\.dismiss) private var dismiss
+    @State private var preset: CustomReadingPreset
+
+    init(initialPreset: CustomReadingPreset) {
+        _preset = State(initialValue: initialPreset)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Custom Reading Style")
+                        .font(.title2.weight(.semibold))
+                    Text("Save typography and colors as a named preset.")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+
+            Form {
+                TextField("Preset name", text: $preset.name)
+
+                Picker("Body font", selection: $preset.bodyFont) {
+                    ForEach(ReadingFont.allCases) { font in
+                        Text(font.title).tag(font)
+                    }
+                }
+                Picker("Heading font", selection: $preset.headingFont) {
+                    ForEach(ReadingFont.allCases) { font in
+                        Text(font.title).tag(font)
+                    }
+                }
+
+                LabeledContent("Text size") {
+                    HStack {
+                        Slider(value: $preset.bodySize, in: 13...22, step: 0.5)
+                            .frame(width: 190)
+                        Text("\(preset.bodySize, specifier: "%.1f") pt")
+                            .monospacedDigit()
+                            .frame(width: 55, alignment: .trailing)
+                    }
+                }
+                LabeledContent("Line height") {
+                    HStack {
+                        Slider(value: $preset.lineHeight, in: 1.25...2.0, step: 0.02)
+                            .frame(width: 190)
+                        Text("\(preset.lineHeight, specifier: "%.2f")")
+                            .monospacedDigit()
+                            .frame(width: 55, alignment: .trailing)
+                    }
+                }
+
+                HexColorPicker("Accent", hex: $preset.accentHex)
+                HexColorPicker("Light page", hex: $preset.lightPageHex)
+                HexColorPicker("Light text", hex: $preset.lightInkHex)
+                HexColorPicker("Dark page", hex: $preset.darkPageHex)
+                HexColorPicker("Dark text", hex: $preset.darkInkHex)
+            }
+            .formStyle(.grouped)
+
+            HStack {
+                if state.customReadingPresets.contains(where: { $0.id == preset.id }) {
+                    Button("Delete", role: .destructive) {
+                        state.deleteCustomPreset(preset)
+                        dismiss()
+                    }
+                }
+                Spacer()
+                Button("Cancel") {
+                    state.editingCustomPreset = nil
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+                Button("Save") {
+                    state.saveCustomPreset(preset)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 540)
+    }
+}
+
+private struct HexColorPicker: View {
+    let title: String
+    @Binding var hex: String
+
+    init(_ title: String, hex: Binding<String>) {
+        self.title = title
+        _hex = hex
+    }
+
+    var body: some View {
+        ColorPicker(title, selection: colorBinding, supportsOpacity: false)
+    }
+
+    private var colorBinding: Binding<Color> {
+        Binding(
+            get: { Color(nsColor: NSColor(previewMDHex: hex) ?? .controlAccentColor) },
+            set: { color in
+                if let value = NSColor(color).usingColorSpace(.sRGB)?.previewMDHex {
+                    hex = value
+                }
+            }
+        )
+    }
+}
+
+private extension NSColor {
+    convenience init?(previewMDHex: String) {
+        let value = previewMDHex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        guard value.count == 6, let number = Int(value, radix: 16) else { return nil }
+        let red = CGFloat((number >> 16) & 0xff) / 255
+        let green = CGFloat((number >> 8) & 0xff) / 255
+        let blue = CGFloat(number & 0xff) / 255
+        self.init(
+            srgbRed: red,
+            green: green,
+            blue: blue,
+            alpha: 1
+        )
+    }
+
+    var previewMDHex: String {
+        let color = usingColorSpace(.sRGB) ?? self
+        return String(
+            format: "#%02X%02X%02X",
+            Int((color.redComponent * 255).rounded()),
+            Int((color.greenComponent * 255).rounded()),
+            Int((color.blueComponent * 255).rounded())
+        )
+    }
+}
+
 private struct SidebarView: View {
     @EnvironmentObject private var state: AppState
 
@@ -734,48 +944,22 @@ private struct SidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            BrandHeader()
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 14)
+            Picker("Sidebar view", selection: $state.sidebarMode) {
+                ForEach(SidebarMode.allCases) { mode in
+                    Image(systemName: mode.symbol)
+                        .help(mode.title)
+                        .tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 12)
+            .padding(.top, 9)
+            .padding(.bottom, 7)
 
             List {
-                if let folderURL = state.workspaceFolderURL {
-                    Section {
-                        if state.workspaceFolderItems.isEmpty {
-                            if state.isWorkspaceFolderLoading {
-                                HStack(spacing: 8) {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                    Text("Scanning for Markdown…")
-                                }
-                                .foregroundStyle(.secondary)
-                            } else {
-                                VStack(spacing: 6) {
-                                    Label(
-                                        "No Markdown Files",
-                                        systemImage: "doc.text.magnifyingglass"
-                                    )
-                                    .font(.callout.weight(.medium))
-                                    Text("This folder has no supported documents.")
-                                        .font(.caption)
-                                        .multilineTextAlignment(.center)
-                                        .foregroundStyle(.secondary)
-                                }
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 12)
-                            }
-                        } else {
-                            OutlineGroup(
-                                state.workspaceFolderItems,
-                                children: \.children
-                            ) { item in
-                                FolderTreeRow(item: item)
-                            }
-                        }
-                    } header: {
-                        FolderSectionHeader(folderURL: folderURL)
-                    }
-                } else {
+                switch state.sidebarMode {
+                case .recent:
                     if !pinned.isEmpty {
                         Section("Pinned") {
                             ForEach(pinned) { item in
@@ -783,13 +967,52 @@ private struct SidebarView: View {
                             }
                         }
                     }
-
                     if !recent.isEmpty {
                         Section("Recent") {
                             ForEach(recent) { item in
                                 RecentRow(item: item)
                             }
                         }
+                    }
+                    if pinned.isEmpty && recent.isEmpty {
+                        ContentUnavailableView(
+                            "No Recent Files",
+                            systemImage: "clock",
+                            description: Text("Open a Markdown document to begin.")
+                        )
+                    }
+
+                case .tree:
+                    if let folderURL = state.workspaceFolderURL {
+                        Section {
+                            WorkspaceFolderContents {
+                                OutlineGroup(
+                                    state.workspaceFolderItems,
+                                    children: \.children
+                                ) { item in
+                                    FolderTreeRow(item: item)
+                                }
+                            }
+                        } header: {
+                            FolderSectionHeader(folderURL: folderURL)
+                        }
+                    } else {
+                        OpenFolderSidebarPrompt()
+                    }
+
+                case .files:
+                    if let folderURL = state.workspaceFolderURL {
+                        Section {
+                            WorkspaceFolderContents {
+                                ForEach(state.workspaceFiles) { item in
+                                    WorkspaceFileRow(item: item, rootURL: folderURL)
+                                }
+                            }
+                        } header: {
+                            FlatFilesHeader(folderURL: folderURL)
+                        }
+                    } else {
+                        OpenFolderSidebarPrompt()
                     }
                 }
             }
@@ -823,6 +1046,53 @@ private struct SidebarView: View {
             .padding(.vertical, 12)
             .foregroundStyle(.secondary)
         }
+    }
+}
+
+private struct WorkspaceFolderContents<Content: View>: View {
+    @EnvironmentObject private var state: AppState
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        if state.workspaceFolderItems.isEmpty {
+            if state.isWorkspaceFolderLoading {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Scanning for Markdown…")
+                }
+                .foregroundStyle(.secondary)
+            } else {
+                ContentUnavailableView(
+                    "No Markdown Files",
+                    systemImage: "doc.text.magnifyingglass",
+                    description: Text("No supported documents were found.")
+                )
+            }
+        } else {
+            content()
+        }
+    }
+}
+
+private struct OpenFolderSidebarPrompt: View {
+    @EnvironmentObject private var state: AppState
+
+    var body: some View {
+        VStack(spacing: 9) {
+            Image(systemName: "folder.badge.plus")
+                .font(.title2)
+                .foregroundStyle(.secondary)
+            Text("Open a folder to browse its Markdown files.")
+                .font(.caption)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+            Button("Open Folder…") {
+                state.presentFolderOpenPanel()
+            }
+            .controlSize(.small)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 18)
     }
 }
 
@@ -863,6 +1133,99 @@ private struct FolderSectionHeader: View {
             .help("Close Folder")
         }
         .textCase(nil)
+    }
+}
+
+private struct FlatFilesHeader: View {
+    @EnvironmentObject private var state: AppState
+    let folderURL: URL
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            FolderSectionHeader(folderURL: folderURL)
+            HStack(spacing: 5) {
+                Picker("Sort files", selection: $state.workspaceFileSort) {
+                    ForEach(WorkspaceFileSort.allCases) { sort in
+                        Text(sort.title).tag(sort)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.mini)
+
+                Button {
+                    state.workspaceSortAscending.toggle()
+                } label: {
+                    Image(
+                        systemName: state.workspaceSortAscending
+                            ? "arrow.up"
+                            : "arrow.down"
+                    )
+                }
+                .buttonStyle(.plain)
+                .help(state.workspaceSortAscending ? "Ascending" : "Descending")
+            }
+        }
+        .textCase(nil)
+    }
+}
+
+private struct WorkspaceFileRow: View {
+    @EnvironmentObject private var state: AppState
+    let item: FolderTreeItem
+    let rootURL: URL
+
+    var body: some View {
+        Button {
+            state.open(url: item.url)
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "doc.text")
+                    .font(.system(size: 13))
+                    .frame(width: 16)
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(item.title)
+                        .lineLimit(1)
+                        .foregroundStyle(.primary)
+                    Text(detail)
+                        .font(.caption2)
+                        .lineLimit(1)
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 2)
+            .contentShape(Rectangle())
+            .background(
+                isSelected ? Color.accentColor.opacity(0.13) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+            )
+        }
+        .buttonStyle(.plain)
+        .help(item.url.path(percentEncoded: false))
+        .contextMenu {
+            Button("Show in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([item.url])
+            }
+        }
+    }
+
+    private var detail: String {
+        if state.workspaceFileSort == .modified, let date = item.modificationDate {
+            return date.formatted(date: .abbreviated, time: .shortened)
+        }
+        let root = rootURL.standardizedFileURL.path
+        let parent = item.url.deletingLastPathComponent().standardizedFileURL.path
+        guard parent.hasPrefix(root) else { return parent }
+        let relative = parent.dropFirst(root.count).trimmingCharacters(
+            in: CharacterSet(charactersIn: "/")
+        )
+        return relative.isEmpty ? rootURL.lastPathComponent : relative
+    }
+
+    private var isSelected: Bool {
+        state.sidebarSelection == item.url.standardizedFileURL.path
     }
 }
 
@@ -916,31 +1279,6 @@ private struct FolderTreeRow: View {
 
     private var isSelected: Bool {
         !item.isDirectory && state.sidebarSelection == item.url.standardizedFileURL.path
-    }
-}
-
-private struct BrandHeader: View {
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(nsImage: NSApplication.shared.applicationIconImage)
-                .resizable()
-                .interpolation(.high)
-                .aspectRatio(contentMode: .fit)
-                .frame(width: 30, height: 30)
-                .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 0) {
-                Text("PREVIEWMD")
-                    .font(.system(size: 12, weight: .bold, design: .rounded))
-                    .tracking(0.7)
-                    .foregroundStyle(.primary)
-                Text("by Jesion")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.tertiary)
-            }
-        }
-        .textCase(nil)
-        .padding(.vertical, 7)
     }
 }
 
@@ -1229,7 +1567,9 @@ private struct PreviewPane: View {
                 documentURL: document.url,
                 theme: state.theme,
                 readingStyle: state.readingStyle,
+                customReadingPreset: state.activeCustomReadingPreset,
                 readingWidth: state.effectiveReadingWidth,
+                readingWidthIsFluid: state.readingWidth == .fullWidth,
                 usesPaperCanvas: state.usesPaperCanvas,
                 zoom: state.zoom,
                 searchText: state.searchText,
@@ -1309,16 +1649,35 @@ private struct ReadingWidthRuler: View {
             .foregroundStyle(.secondary)
             .help("Reset to comfortable reading width")
 
+            Button {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    state.readingWidth = .fullWidth
+                }
+            } label: {
+                Image(systemName: "arrow.left.and.right.square")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .frame(width: 18, height: 18)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(
+                state.readingWidth == .fullWidth ? Color.accentColor : .secondary
+            )
+            .help("Fit text to the available window width")
+
             Slider(value: widthBinding, in: 560...1600)
                 .controlSize(.small)
                 .frame(width: 176)
                 .help("Drag to adjust document width")
 
-            Text("\(state.effectiveReadingWidth) px")
+            Text(
+                state.readingWidth == .fullWidth
+                    ? "Window"
+                    : "\(state.effectiveReadingWidth) px"
+            )
                 .font(.system(size: 10.5, weight: .medium, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
-                .frame(width: 54, alignment: .trailing)
+                .frame(width: 58, alignment: .trailing)
 
             Divider()
                 .frame(height: 18)
@@ -1381,15 +1740,9 @@ private struct SourceEditor: View {
     @EnvironmentObject private var state: AppState
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
+        ZStack {
             Color(nsColor: .textBackgroundColor)
-
-            TextEditor(text: state.bindingForCurrentContent())
-                .font(.system(size: 13.5, design: .monospaced))
-                .lineSpacing(3)
-                .scrollContentBackground(.hidden)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
+            MarkdownSourceEditor(text: state.bindingForCurrentContent())
         }
     }
 }
@@ -1409,6 +1762,13 @@ private struct StatusBar: View {
 
             Text("\(document.wordCount.formatted()) words")
             Text("\(document.readingMinutes) min read")
+
+            if document.hasExternalChanges {
+                Label("Changed on disk — save or reload", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+            } else if document.url != nil, state.liveReloadEnabled {
+                Label("Live", systemImage: "bolt.fill")
+            }
 
             Spacer()
 
@@ -1771,7 +2131,9 @@ struct SettingsView: View {
         Form {
             Section("Appearance") {
                 Picker("Style", selection: $state.readingStyle) {
-                    ForEach(ReadingStyle.allCases) { style in
+                    ForEach(ReadingStyle.allCases.filter {
+                        $0 != .custom || !state.customReadingPresets.isEmpty
+                    }) { style in
                         Label(style.title, systemImage: style.symbol).tag(style)
                     }
                 }

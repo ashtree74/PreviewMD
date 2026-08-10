@@ -21,7 +21,7 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertTrue(workspace.contains("edges: .top"))
     }
 
-    func testSidebarKeepsBrandButDoesNotAdvertiseShowcase() throws {
+    func testSidebarUsesViewTabsInsteadOfBrandBlock() throws {
         let source = try workspaceSource()
         let sidebarStart = try XCTUnwrap(
             source.range(of: "private struct SidebarView")
@@ -32,7 +32,11 @@ final class WorkspaceLayoutTests: XCTestCase {
         )
         let sidebar = String(sidebarTail[..<sidebarEnd.lowerBound])
 
-        XCTAssertTrue(sidebar.contains("BrandHeader()"))
+        XCTAssertTrue(sidebar.contains("Picker(\"Sidebar view\""))
+        XCTAssertTrue(sidebar.contains("SidebarMode.allCases"))
+        XCTAssertFalse(sidebar.contains("BrandHeader()"))
+        XCTAssertFalse(sidebar.contains("PREVIEWMD"))
+        XCTAssertFalse(sidebar.contains("by Jesion"))
         XCTAssertFalse(sidebar.contains("Showcase"))
         XCTAssertFalse(sidebar.contains("openWelcome"))
     }
@@ -51,10 +55,59 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertTrue(ruler.contains("Menu {"))
         XCTAssertTrue(ruler.contains("Picker(\"Reading width\""))
         XCTAssertTrue(ruler.contains("ReadingWidth.allCases"))
+        XCTAssertTrue(ruler.contains("state.readingWidth = .fullWidth"))
         XCTAssertTrue(ruler.contains(".pickerStyle(.inline)"))
         XCTAssertTrue(ruler.contains(".labelsHidden()"))
         XCTAssertFalse(ruler.contains("Fit tables"))
         XCTAssertFalse(ruler.contains("fitWideContent"))
+    }
+
+    func testSourceModeUsesWrappingSyntaxColoredEditor() throws {
+        let source = try workspaceSource()
+        let editorStart = try XCTUnwrap(
+            source.range(of: "private struct SourceEditor")
+        )
+        let editor = String(source[editorStart.lowerBound...])
+
+        XCTAssertTrue(editor.contains("MarkdownSourceEditor("))
+        XCTAssertFalse(editor.contains("TextEditor("))
+
+        let sourceEditorURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/PreviewMD/MarkdownSourceEditor.swift")
+        let sourceEditor = try String(contentsOf: sourceEditorURL, encoding: .utf8)
+        XCTAssertTrue(sourceEditor.contains("hasHorizontalScroller = false"))
+        XCTAssertTrue(sourceEditor.contains("widthTracksTextView = true"))
+        XCTAssertTrue(sourceEditor.contains("NSRegularExpression"))
+    }
+
+    func testAppearanceToolbarUsesRealSubmenusAndShowsStyleShortcut() throws {
+        let source = try workspaceSource()
+        let utilitiesStart = try XCTUnwrap(
+            source.range(of: "private struct ToolbarUtilities")
+        )
+        let utilitiesTail = source[utilitiesStart.lowerBound...]
+        let utilitiesEnd = try XCTUnwrap(
+            utilitiesTail.range(of: "private struct CustomStyleEditor")
+        )
+        let utilities = String(utilitiesTail[..<utilitiesEnd.lowerBound])
+
+        XCTAssertTrue(utilities.contains("Label(\"Theme\""))
+        XCTAssertTrue(utilities.contains("Label(\"Reading width\""))
+        XCTAssertFalse(utilities.contains("Picker(\"Theme\""))
+        XCTAssertFalse(utilities.contains("Picker(\"Reading width\""))
+        XCTAssertTrue(
+            utilities.contains(
+                #".keyboardShortcut("t", modifiers: [.command, .option])"#
+            )
+        )
+
+        let appSource = try previewMDAppSource()
+        let shortcut = #".keyboardShortcut("t", modifiers: [.command, .option])"#
+        let occurrences = (source + appSource).components(separatedBy: shortcut).count - 1
+        XCTAssertEqual(occurrences, 1, "The shortcut must have one active menu owner")
     }
 
     private func workspaceSource() throws -> String {
@@ -63,6 +116,16 @@ final class WorkspaceLayoutTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/PreviewMD/WorkspaceView.swift")
+
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    private func previewMDAppSource() throws -> String {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/PreviewMD/PreviewMDApp.swift")
 
         return try String(contentsOf: url, encoding: .utf8)
     }

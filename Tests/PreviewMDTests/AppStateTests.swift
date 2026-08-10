@@ -1,5 +1,6 @@
 #if canImport(XCTest)
 import AppKit
+import Combine
 import Foundation
 import XCTest
 @testable import PreviewMD
@@ -228,6 +229,151 @@ final class AppStateTests: XCTestCase {
         )
     }
 
+    func testReopeningClosedTabReadsTheCurrentDiskVersion() throws {
+        let state = try makeState()
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PreviewMD-reopen-\(UUID().uuidString).md")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        try "# Old version\n".write(to: fileURL, atomically: true, encoding: .utf8)
+
+        state.open(url: fileURL)
+        let firstID = try XCTUnwrap(state.currentDocument?.id)
+        state.closeTab(firstID)
+        try "# Changed outside PreviewMD\n".write(
+            to: fileURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        state.open(url: fileURL)
+
+        XCTAssertNotEqual(state.currentDocument?.id, firstID)
+        XCTAssertEqual(state.currentDocument?.content, "# Changed outside PreviewMD\n")
+    }
+
+    func testLiveReloadUpdatesCleanOpenDocument() throws {
+        let state = try makeState()
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PreviewMD-live-\(UUID().uuidString).md")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        try "First\n".write(to: fileURL, atomically: true, encoding: .utf8)
+        state.open(url: fileURL)
+
+        try "Written by another tool\n".write(to: fileURL, atomically: true, encoding: .utf8)
+        state.pollForExternalChanges()
+
+        XCTAssertEqual(state.currentDocument?.content, "Written by another tool\n")
+        XCTAssertFalse(state.currentDocument?.hasExternalChanges ?? true)
+    }
+
+    func testLiveReloadNeverOverwritesUnsavedLocalChanges() throws {
+        let state = try makeState()
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PreviewMD-live-conflict-\(UUID().uuidString).md")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        try "Saved\n".write(to: fileURL, atomically: true, encoding: .utf8)
+        state.open(url: fileURL)
+        let document = try XCTUnwrap(state.currentDocument)
+        state.updateContent("Local edit\n", for: document.id, origin: .source)
+
+        try "External edit\n".write(to: fileURL, atomically: true, encoding: .utf8)
+        state.pollForExternalChanges()
+
+        XCTAssertEqual(state.currentDocument?.content, "Local edit\n")
+        XCTAssertTrue(state.currentDocument?.hasExternalChanges == true)
+
+        var publicationCount = 0
+        let observation = state.objectWillChange.sink {
+            publicationCount += 1
+        }
+        state.pollForExternalChanges()
+        withExtendedLifetime(observation) {
+            XCTAssertEqual(
+                publicationCount,
+                0,
+                "An already-reported conflict must not invalidate open menus again"
+            )
+        }
+    }
+
+    func testFullWidthAndNamedCustomStylePersist() throws {
+        let suiteName = "PreviewMDTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let state = AppState(defaults: defaults)
+        var preset = CustomReadingPreset.starter
+        preset.name = "RFP"
+
+        state.readingWidth = .fullWidth
+        state.saveCustomPreset(preset)
+        state.updatePreferences()
+
+        let restored = AppState(defaults: defaults)
+        XCTAssertEqual(restored.readingWidth, .fullWidth)
+        XCTAssertEqual(restored.readingStyle, .custom)
+        XCTAssertEqual(restored.activeCustomReadingPreset?.name, "RFP")
+    }
+
+    func testEachNewCustomStyleGetsAUniqueIdentifier() throws {
+        let state = try makeState()
+        var first = CustomReadingPreset.starter
+        first.name = "First"
+        var second = CustomReadingPreset.starter
+        second.name = "Second"
+
+        XCTAssertNotEqual(first.id, second.id)
+
+        state.saveCustomPreset(first)
+        state.saveCustomPreset(second)
+
+        XCTAssertEqual(state.customReadingPresets.map(\.name), ["First", "Second"])
+    }
+
+    func testReadingStyleShortcutCyclesWithoutAnOpenDocument() throws {
+        let state = try makeState()
+        XCTAssertNil(state.currentDocument)
+
+        state.readingStyle = .modern
+        state.cycleReadingStyle()
+        XCTAssertEqual(state.readingStyle, .classic)
+        state.cycleReadingStyle()
+        XCTAssertEqual(state.readingStyle, .editorial)
+        state.cycleReadingStyle()
+        XCTAssertEqual(state.readingStyle, .modern)
+    }
+
+    func testPDFPageFormatsUsePhysicalPageDimensions() {
+        let options = PDFExportOptions(
+            pageFormat: .letter,
+            orientation: .landscape,
+            theme: .dark,
+            style: .editorial,
+            margins: .generous,
+            customPreset: nil
+        )
+
+        XCTAssertEqual(options.printInfo.paperSize.width, 792, accuracy: 0.01)
+        XCTAssertEqual(options.printInfo.paperSize.height, 612, accuracy: 0.01)
+        XCTAssertEqual(options.printInfo.orientation, .landscape)
+        XCTAssertEqual(options.printInfo.leftMargin, 58)
+    }
+
+    func testPDFStyleChoiceCanSelectAnySavedCustomPreset() {
+        var first = CustomReadingPreset.starter
+        first.name = "First"
+        var second = CustomReadingPreset.starter
+        second.name = "Second"
+
+        let selection = PDFReadingStyleChoice.resolve(
+            PDFReadingStyleChoice.key(for: second.id),
+            customPresets: [first, second]
+        )
+
+        XCTAssertEqual(selection.style, .custom)
+        XCTAssertEqual(selection.customPreset?.id, second.id)
+        XCTAssertEqual(selection.customPreset?.name, "Second")
+    }
+
     func testRendererShellStartsWithCurrentAppearance() {
         let payload = MarkdownWebView.RenderPayload(
             documentID: UUID().uuidString,
@@ -236,8 +382,10 @@ final class AppStateTests: XCTestCase {
             editable: true,
             theme: PreviewTheme.dark.rawValue,
             readingStyle: ReadingStyle.classic.rawValue,
+            customReadingPreset: nil,
             systemDark: false,
             readingWidth: 1_440,
+            readingWidthIsFluid: false,
             paperCanvas: false,
             zoom: 1.2,
             searchText: "",
@@ -249,9 +397,48 @@ final class AppStateTests: XCTestCase {
 
         XCTAssertTrue(
             html.contains(
-                #"<html lang="en" data-theme="dark" data-style="classic" data-paper="false" style="--reading-width: 1440px; --top-inset: 0.0px">"#
+                #"<html lang="en" data-theme="dark" data-style="classic" data-paper="false" data-width="fixed" style="--reading-width: 1440px; --top-inset: 0.0px;">"#
             )
         )
+    }
+
+    func testSwitchingDocumentForcesRenderEvenWhenMarkdownMatches() {
+        let first = MarkdownWebView.RenderPayload(
+            documentID: UUID().uuidString,
+            markdown: "Same contents",
+            revision: 0,
+            editable: true,
+            theme: PreviewTheme.light.rawValue,
+            readingStyle: ReadingStyle.modern.rawValue,
+            customReadingPreset: nil,
+            systemDark: false,
+            readingWidth: 820,
+            readingWidthIsFluid: false,
+            paperCanvas: false,
+            zoom: 1,
+            searchText: "",
+            outlineTarget: nil,
+            topInset: 0
+        )
+        let reopened = MarkdownWebView.RenderPayload(
+            documentID: UUID().uuidString,
+            markdown: first.markdown,
+            revision: first.revision,
+            editable: first.editable,
+            theme: first.theme,
+            readingStyle: first.readingStyle,
+            customReadingPreset: first.customReadingPreset,
+            systemDark: first.systemDark,
+            readingWidth: first.readingWidth,
+            readingWidthIsFluid: first.readingWidthIsFluid,
+            paperCanvas: first.paperCanvas,
+            zoom: first.zoom,
+            searchText: first.searchText,
+            outlineTarget: first.outlineTarget,
+            topInset: first.topInset
+        )
+
+        XCTAssertTrue(reopened.requiresFullRender(comparedTo: first))
     }
 
     func testDockOpenRequestWaitsForAppState() throws {

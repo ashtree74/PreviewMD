@@ -315,6 +315,7 @@ final class EditorWebViewTests: XCTestCase, WKNavigationDelegate {
                 "alert-warning",
                 "alert-caution",
                 "footnote",
+                "frontmatter",
                 "raw-markdown",
             ])
         )
@@ -980,6 +981,111 @@ final class EditorWebViewTests: XCTestCase, WKNavigationDelegate {
         )
     }
 
+    func testFrontmatterRendersAboveTitleAndRoundTrips() async throws {
+        let markdown = """
+        ---
+        title: "Meritum AI"
+        date: 2026-08-10
+        status: rfp
+        scope: "pilot 20 gmin"
+        ---
+
+        # Specification
+        """
+        let webView = try await makeEditor(markdown: markdown)
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const card = document.querySelector(".frontmatter-card");
+            return {
+              first: card === document.querySelector("#preview-document").firstElementChild,
+              keys: Array.from(card.querySelectorAll("dt"), (node) => node.textContent),
+              values: Array.from(card.querySelectorAll("dd"), (node) => node.textContent),
+              markdown: window.previewmdSerializeEditor(),
+            };
+            """,
+            contentWorld: .page
+        )
+        let output = try XCTUnwrap(result as? [String: Any])
+
+        XCTAssertEqual(output["first"] as? Bool, true)
+        XCTAssertEqual(output["keys"] as? [String], ["title", "date", "status", "scope"])
+        XCTAssertEqual(output["values"] as? [String], ["Meritum AI", "2026-08-10", "rfp", "pilot 20 gmin"])
+        XCTAssertEqual(output["markdown"] as? String, markdown + "\n")
+    }
+
+    func testCommonGitHubBadgesUseCompactBadgePresentation() async throws {
+        let markdown = """
+        ![build](https://img.shields.io/badge/build-passing-green)
+        ![tests](https://github.com/example/repo/actions/workflows/tests.yml/badge.svg)
+        """
+        let webView = try await makeEditor(markdown: markdown)
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const images = Array.from(document.querySelectorAll("#preview-document img"));
+            return {
+              badges: images.map((image) => image.classList.contains("markdown-badge")),
+              markdown: window.previewmdSerializeEditor(),
+            };
+            """,
+            contentWorld: .page
+        )
+        let output = try XCTUnwrap(result as? [String: Any])
+        XCTAssertEqual(output["badges"] as? [Bool], [true, true])
+        XCTAssertEqual(output["markdown"] as? String, markdown + "\n")
+    }
+
+    func testTypingMarkdownHeadingMarkerTransformsVisualBlock() async throws {
+        let webView = try await makeEditor(markdown: "")
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const paragraph = document.querySelector("#preview-document p");
+            paragraph.textContent = "##";
+            const range = document.createRange();
+            range.selectNodeContents(paragraph);
+            range.collapse(false);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            paragraph.dispatchEvent(
+              new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true })
+            );
+            const heading = document.querySelector("#preview-document h2");
+            heading.textContent = "Visual heading";
+            heading.dispatchEvent(new InputEvent("input", { bubbles: true }));
+            return window.previewmdFlushEditor();
+            """,
+            contentWorld: .page
+        )
+
+        XCTAssertEqual(result as? String, "## Visual heading\n")
+    }
+
+    func testTypingInlineMarkdownTransformsVisualText() async throws {
+        let webView = try await makeEditor(markdown: "")
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const paragraph = document.querySelector("#preview-document p");
+            paragraph.textContent = "Use **bold**";
+            const text = paragraph.firstChild;
+            const range = document.createRange();
+            range.setStart(text, text.nodeValue.length);
+            range.collapse(true);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            paragraph.dispatchEvent(new InputEvent("input", { bubbles: true }));
+            return {
+              transformed: Boolean(paragraph.querySelector("strong")),
+              markdown: window.previewmdFlushEditor(),
+            };
+            """,
+            contentWorld: .page
+        )
+        let output = try XCTUnwrap(result as? [String: Any])
+        XCTAssertEqual(output["transformed"] as? Bool, true)
+        XCTAssertEqual(output["markdown"] as? String, "Use **bold**\n")
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation?) {
         navigationExpectation?.fulfill()
     }
@@ -995,8 +1101,10 @@ final class EditorWebViewTests: XCTestCase, WKNavigationDelegate {
             editable: true,
             theme: PreviewTheme.light.rawValue,
             readingStyle: ReadingStyle.modern.rawValue,
+            customReadingPreset: nil,
             systemDark: false,
             readingWidth: 820,
+            readingWidthIsFluid: false,
             paperCanvas: false,
             zoom: 1,
             searchText: "",

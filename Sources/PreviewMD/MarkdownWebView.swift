@@ -42,6 +42,9 @@ final class RendererController: ObservableObject {
 
     func exportPDF(
         suggestedName: String,
+        initialStyle: ReadingStyle,
+        customPresets: [CustomReadingPreset],
+        selectedCustomPresetID: UUID?,
         completion: @escaping ((any Error)?) -> Void
     ) {
         guard let webView else {
@@ -55,35 +58,358 @@ final class RendererController: ObservableObject {
         panel.nameFieldStringValue = suggestedName
         panel.allowedContentTypes = [.pdf]
         panel.canCreateDirectories = true
+        let accessory = PDFExportAccessoryView(
+            initialStyle: initialStyle,
+            customPresets: customPresets,
+            selectedCustomPresetID: selectedCustomPresetID
+        )
+        panel.accessoryView = accessory
 
         guard panel.runModal() == .OK, let destinationURL = panel.url else {
             return
         }
 
-        let configuration = WKPDFConfiguration()
-        webView.createPDF(configuration: configuration) { result in
-            Task { @MainActor in
-                switch result {
-                case .success(let data):
-                    do {
-                        try data.write(to: destinationURL, options: .atomic)
-                        completion(nil)
-                    } catch {
-                        completion(error)
-                    }
-                case .failure(let error):
-                    completion(error)
+        runPrintOperation(
+            in: webView,
+            options: accessory.options,
+            destinationURL: destinationURL,
+            showsPrintPanel: false,
+            completion: completion
+        )
+    }
+
+    func printDocument(
+        style: ReadingStyle,
+        customPreset: CustomReadingPreset?,
+        completion: @escaping ((any Error)?) -> Void
+    ) {
+        guard let webView else {
+            completion(RendererError.rendererUnavailable)
+            return
+        }
+        // Physical printing is intentionally light even when the on-screen
+        // document or a PDF export uses a dark grade.
+        let options = PDFExportOptions(
+            pageFormat: .a4,
+            orientation: .portrait,
+            theme: .light,
+            style: style,
+            margins: .normal,
+            customPreset: customPreset
+        )
+        runPrintOperation(
+            in: webView,
+            options: options,
+            destinationURL: nil,
+            showsPrintPanel: true,
+            completion: completion
+        )
+    }
+
+    private func runPrintOperation(
+        in webView: WKWebView,
+        options: PDFExportOptions,
+        destinationURL: URL?,
+        showsPrintPanel: Bool,
+        completion: @escaping ((any Error)?) -> Void
+    ) {
+        guard let data = try? JSONEncoder().encode(options),
+              let arguments = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            completion(RendererError.invalidPrintOptions)
+            return
+        }
+
+        Task { @MainActor [weak webView] in
+            guard let webView else {
+                completion(RendererError.rendererUnavailable)
+                return
+            }
+            do {
+                _ = try await webView.callAsyncJavaScript(
+                    "await window.previewmdPreparePrint(options); return true;",
+                    arguments: ["options": arguments],
+                    contentWorld: .page
+                )
+                let printInfo = options.printInfo
+                if let destinationURL {
+                    printInfo.jobDisposition = .save
+                    printInfo.dictionary()[NSPrintInfo.AttributeKey.jobSavingURL] = destinationURL
                 }
+                let operation = webView.printOperation(with: printInfo)
+                operation.showsPrintPanel = showsPrintPanel
+                operation.showsProgressPanel = true
+                let succeeded = operation.run()
+                _ = try? await webView.callAsyncJavaScript(
+                    "await window.previewmdFinishPrint(); return true;",
+                    arguments: [:],
+                    contentWorld: .page
+                )
+                completion(
+                    succeeded || showsPrintPanel
+                        ? nil
+                        : RendererError.printCancelledOrFailed
+                )
+            } catch {
+                _ = try? await webView.callAsyncJavaScript(
+                    "await window.previewmdFinishPrint(); return true;",
+                    arguments: [:],
+                    contentWorld: .page
+                )
+                completion(error)
             }
         }
     }
 
     private enum RendererError: LocalizedError {
         case rendererUnavailable
+        case invalidPrintOptions
+        case printCancelledOrFailed
 
         var errorDescription: String? {
-            "The preview renderer is not available."
+            switch self {
+            case .rendererUnavailable:
+                "The preview renderer is not available."
+            case .invalidPrintOptions:
+                "The PDF options could not be prepared."
+            case .printCancelledOrFailed:
+                "The print operation was cancelled or failed."
+            }
         }
+    }
+}
+
+enum PDFPageFormat: String, CaseIterable, Codable {
+    case a4
+    case letter
+    case legal
+    case a5
+
+    var title: String {
+        switch self {
+        case .a4: "A4"
+        case .letter: "US Letter"
+        case .legal: "US Legal"
+        case .a5: "A5"
+        }
+    }
+
+    var paperSize: NSSize {
+        switch self {
+        case .a4: NSSize(width: 595.28, height: 841.89)
+        case .letter: NSSize(width: 612, height: 792)
+        case .legal: NSSize(width: 612, height: 1008)
+        case .a5: NSSize(width: 419.53, height: 595.28)
+        }
+    }
+}
+
+enum PDFOrientation: String, CaseIterable, Codable {
+    case portrait
+    case landscape
+
+    var title: String { self == .portrait ? "Portrait" : "Landscape" }
+}
+
+enum PDFExportTheme: String, CaseIterable, Codable {
+    case light
+    case dark
+
+    var title: String { self == .light ? "Light" : "Dark" }
+}
+
+enum PDFMargins: String, CaseIterable, Codable {
+    case narrow
+    case normal
+    case generous
+
+    var title: String {
+        switch self {
+        case .narrow: "Narrow"
+        case .normal: "Normal"
+        case .generous: "Generous"
+        }
+    }
+
+    var points: CGFloat {
+        switch self {
+        case .narrow: 24
+        case .normal: 40
+        case .generous: 58
+        }
+    }
+}
+
+struct PDFExportOptions: Codable {
+    var pageFormat: PDFPageFormat
+    var orientation: PDFOrientation
+    var theme: PDFExportTheme
+    var style: ReadingStyle
+    var margins: PDFMargins
+    var customPreset: CustomReadingPreset?
+
+    var printInfo: NSPrintInfo {
+        let info = NSPrintInfo()
+        info.paperSize = pageFormat.paperSize
+        info.orientation = orientation == .portrait ? .portrait : .landscape
+        info.topMargin = margins.points
+        info.bottomMargin = margins.points
+        info.leftMargin = margins.points
+        info.rightMargin = margins.points
+        info.horizontalPagination = .automatic
+        info.verticalPagination = .automatic
+        info.isHorizontallyCentered = false
+        info.isVerticallyCentered = false
+        info.dictionary()[NSPrintInfo.AttributeKey.headerAndFooter] = false
+        return info
+    }
+}
+
+enum PDFReadingStyleChoice {
+    private static let stylePrefix = "style:"
+    private static let presetPrefix = "preset:"
+
+    static func key(for style: ReadingStyle, selectedPresetID: UUID?) -> String {
+        if style == .custom, let selectedPresetID {
+            return presetPrefix + selectedPresetID.uuidString
+        }
+        return stylePrefix + style.rawValue
+    }
+
+    static func key(for presetID: UUID) -> String {
+        presetPrefix + presetID.uuidString
+    }
+
+    static func resolve(
+        _ key: String?,
+        customPresets: [CustomReadingPreset]
+    ) -> (style: ReadingStyle, customPreset: CustomReadingPreset?) {
+        if let key, key.hasPrefix(presetPrefix),
+           let id = UUID(uuidString: String(key.dropFirst(presetPrefix.count))),
+           let preset = customPresets.first(where: { $0.id == id }) {
+            return (.custom, preset.normalized)
+        }
+        if let key, key.hasPrefix(stylePrefix),
+           let style = ReadingStyle(rawValue: String(key.dropFirst(stylePrefix.count))),
+           style != .custom {
+            return (style, nil)
+        }
+        return (.modern, nil)
+    }
+}
+
+@MainActor
+private final class PDFExportAccessoryView: NSView {
+    private let pagePopup = NSPopUpButton()
+    private let orientationPopup = NSPopUpButton()
+    private let themePopup = NSPopUpButton()
+    private let stylePopup = NSPopUpButton()
+    private let marginsPopup = NSPopUpButton()
+    private let customPresets: [CustomReadingPreset]
+
+    init(
+        initialStyle: ReadingStyle,
+        customPresets: [CustomReadingPreset],
+        selectedCustomPresetID: UUID?
+    ) {
+        self.customPresets = customPresets.map(\.normalized)
+        super.init(frame: NSRect(x: 0, y: 0, width: 390, height: 160))
+
+        configure(pagePopup, cases: PDFPageFormat.allCases, title: \.title, raw: \.rawValue)
+        configure(orientationPopup, cases: PDFOrientation.allCases, title: \.title, raw: \.rawValue)
+        configure(themePopup, cases: PDFExportTheme.allCases, title: \.title, raw: \.rawValue)
+        configure(marginsPopup, cases: PDFMargins.allCases, title: \.title, raw: \.rawValue)
+
+        stylePopup.removeAllItems()
+        for style in ReadingStyle.allCases where style != .custom {
+            stylePopup.addItem(withTitle: style.title)
+            stylePopup.lastItem?.representedObject = PDFReadingStyleChoice.key(
+                for: style,
+                selectedPresetID: nil
+            )
+        }
+        for preset in self.customPresets {
+            stylePopup.addItem(withTitle: preset.name)
+            stylePopup.lastItem?.representedObject = PDFReadingStyleChoice.key(for: preset.id)
+        }
+        select(
+            rawValue: PDFReadingStyleChoice.key(
+                for: initialStyle,
+                selectedPresetID: selectedCustomPresetID ?? self.customPresets.first?.id
+            ),
+            in: stylePopup
+        )
+
+        let grid = NSGridView(views: [
+            [label("Page"), pagePopup],
+            [label("Orientation"), orientationPopup],
+            [label("Appearance"), themePopup],
+            [label("Reading style"), stylePopup],
+            [label("Margins"), marginsPopup],
+        ])
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        grid.rowSpacing = 7
+        grid.columnSpacing = 12
+        grid.column(at: 0).xPlacement = .trailing
+        grid.column(at: 1).xPlacement = .fill
+        addSubview(grid)
+        NSLayoutConstraint.activate([
+            grid.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            grid.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            grid.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            grid.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -8),
+        ])
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    var options: PDFExportOptions {
+        let styleChoice = PDFReadingStyleChoice.resolve(
+            stylePopup.selectedItem?.representedObject as? String,
+            customPresets: customPresets
+        )
+        return PDFExportOptions(
+            pageFormat: selected(PDFPageFormat.self, in: pagePopup) ?? .a4,
+            orientation: selected(PDFOrientation.self, in: orientationPopup) ?? .portrait,
+            theme: selected(PDFExportTheme.self, in: themePopup) ?? .light,
+            style: styleChoice.style,
+            margins: selected(PDFMargins.self, in: marginsPopup) ?? .normal,
+            customPreset: styleChoice.customPreset
+        )
+    }
+
+    private func label(_ title: String) -> NSTextField {
+        let field = NSTextField(labelWithString: title)
+        field.alignment = .right
+        field.textColor = .secondaryLabelColor
+        return field
+    }
+
+    private func configure<T: RawRepresentable>(
+        _ popup: NSPopUpButton,
+        cases: [T],
+        title: KeyPath<T, String>,
+        raw: KeyPath<T, String>
+    ) {
+        popup.removeAllItems()
+        for value in cases {
+            popup.addItem(withTitle: value[keyPath: title])
+            popup.lastItem?.representedObject = value[keyPath: raw]
+        }
+    }
+
+    private func select(rawValue: String, in popup: NSPopUpButton) {
+        if let item = popup.itemArray.first(where: { $0.representedObject as? String == rawValue }) {
+            popup.select(item)
+        }
+    }
+
+    private func selected<T: RawRepresentable>(
+        _ type: T.Type,
+        in popup: NSPopUpButton
+    ) -> T? where T.RawValue == String {
+        guard let raw = popup.selectedItem?.representedObject as? String else { return nil }
+        return T(rawValue: raw)
     }
 }
 
@@ -95,7 +421,9 @@ struct MarkdownWebView: NSViewRepresentable {
     let documentURL: URL?
     let theme: PreviewTheme
     let readingStyle: ReadingStyle
+    let customReadingPreset: CustomReadingPreset?
     let readingWidth: Int
+    let readingWidthIsFluid: Bool
     let usesPaperCanvas: Bool
     let zoom: Double
     let searchText: String
@@ -126,8 +454,10 @@ struct MarkdownWebView: NSViewRepresentable {
             editable: isEditable,
             theme: theme.rawValue,
             readingStyle: readingStyle.rawValue,
+            customReadingPreset: customReadingPreset,
             systemDark: colorScheme == .dark,
             readingWidth: readingWidth,
+            readingWidthIsFluid: readingWidthIsFluid,
             paperCanvas: usesPaperCanvas,
             zoom: zoom,
             searchText: searchText,
@@ -217,8 +547,10 @@ struct MarkdownWebView: NSViewRepresentable {
         let editable: Bool
         let theme: String
         let readingStyle: String
+        let customReadingPreset: CustomReadingPreset?
         let systemDark: Bool
         let readingWidth: Int
+        let readingWidthIsFluid: Bool
         let paperCanvas: Bool
         let zoom: Double
         let searchText: String
@@ -229,9 +561,11 @@ struct MarkdownWebView: NSViewRepresentable {
         let topInset: Double
 
         func requiresFullRender(comparedTo other: Self) -> Bool {
-            markdown != other.markdown
+            documentID != other.documentID
+                || markdown != other.markdown
                 || theme != other.theme
                 || readingStyle != other.readingStyle
+                || customReadingPreset != other.customReadingPreset
                 || systemDark != other.systemDark
         }
 
@@ -245,9 +579,24 @@ struct MarkdownWebView: NSViewRepresentable {
 
         var rootHTMLAttributes: String {
             let paperValue = paperCanvas ? "true" : "false"
+            let widthValue = readingWidthIsFluid ? "fluid" : "fixed"
+            let customVariables: String
+            if readingStyle == ReadingStyle.custom.rawValue,
+                let preset = customReadingPreset?.normalized {
+                let bodyFont = preset.bodyFont.cssFamily.replacingOccurrences(of: "\"", with: "'")
+                let headingFont = preset.headingFont.cssFamily.replacingOccurrences(of: "\"", with: "'")
+                let pageHex = initialTheme == "dark" ? preset.darkPageHex : preset.lightPageHex
+                let inkHex = initialTheme == "dark" ? preset.darkInkHex : preset.lightInkHex
+                customVariables = " --font-body: \(bodyFont); --font-display: \(headingFont);" +
+                    " --body-size: \(preset.bodySize)px; --body-leading: \(preset.lineHeight);" +
+                    " --accent: \(preset.accentHex); --page: \(pageHex);" +
+                    " --ink: \(inkHex);"
+            } else {
+                customVariables = ""
+            }
             return """
             data-theme="\(initialTheme)" data-style="\(readingStyle)" data-paper="\(paperValue)" \
-            style="--reading-width: \(readingWidth)px; --top-inset: \(topInset)px"
+            data-width="\(widthValue)" style="--reading-width: \(readingWidth)px; --top-inset: \(topInset)px;\(customVariables)"
             """
         }
     }
@@ -266,6 +615,7 @@ struct MarkdownWebView: NSViewRepresentable {
         private var pendingPayload: RenderPayload?
         private var lastPayload: RenderPayload?
         private var lastEditorMarkdown: String?
+        private var lastEditorDocumentID: UUID?
 
         init(
             documentID: UUID,
@@ -382,6 +732,7 @@ struct MarkdownWebView: NSViewRepresentable {
                           let markdown = body["markdown"] as? String
                     else { return }
                     lastEditorMarkdown = markdown
+                    lastEditorDocumentID = documentID
                     let historyBoundary = body["historyBoundary"] as? Bool ?? false
                     onContentChange(documentID, markdown, historyBoundary)
                 case "pickImage":
@@ -479,10 +830,11 @@ struct MarkdownWebView: NSViewRepresentable {
                 lastPayload = payload
 
                 if payload.readingWidth != previous.readingWidth
+                    || payload.readingWidthIsFluid != previous.readingWidthIsFluid
                     || payload.paperCanvas != previous.paperCanvas
                     || payload.topInset != previous.topInset {
                     webView.evaluateJavaScript(
-                        "window.previewmdSetLayout(\(payload.readingWidth), \(payload.paperCanvas), \(payload.topInset));"
+                        "window.previewmdSetLayout(\(payload.readingWidth), \(payload.paperCanvas), \(payload.topInset), \(payload.readingWidthIsFluid));"
                     )
                 }
 
@@ -506,12 +858,15 @@ struct MarkdownWebView: NSViewRepresentable {
             }
 
             if let previous = lastPayload,
+               payload.documentID == previous.documentID,
+               payload.documentID == lastEditorDocumentID?.uuidString,
                payload.markdown == lastEditorMarkdown,
                payload.theme == previous.theme,
                payload.readingStyle == previous.readingStyle,
                payload.systemDark == previous.systemDark {
                 lastPayload = payload
                 lastEditorMarkdown = nil
+                lastEditorDocumentID = nil
                 webView.evaluateJavaScript(
                     "window.previewmdSetEditable && window.previewmdSetEditable(\(payload.editable));"
                 )
@@ -524,6 +879,7 @@ struct MarkdownWebView: NSViewRepresentable {
 
             lastPayload = payload
             lastEditorMarkdown = nil
+            lastEditorDocumentID = nil
             webView.evaluateJavaScript("window.previewmdRender(\(json));")
         }
 

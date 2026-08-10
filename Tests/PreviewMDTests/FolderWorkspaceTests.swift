@@ -1,4 +1,5 @@
 #if canImport(XCTest)
+import Combine
 import Foundation
 import XCTest
 @testable import PreviewMD
@@ -68,6 +69,33 @@ final class FolderWorkspaceTests: XCTestCase {
         state.closeWorkspaceFolder()
         XCTAssertNil(state.workspaceFolderURL)
         XCTAssertTrue(state.workspaceFolderItems.isEmpty)
+    }
+
+    func testUnchangedLiveFolderScanDoesNotRepublishAppState() async throws {
+        let root = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write("# Document", to: root.appendingPathComponent("document.md"))
+        let state = try makeState()
+
+        state.openFolder(url: root)
+        for _ in 0..<100 where state.isWorkspaceFolderLoading {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        var publicationCount = 0
+        let observation = state.objectWillChange.sink {
+            publicationCount += 1
+        }
+        state.pollForExternalChanges(now: .distantFuture)
+        try await Task.sleep(for: .milliseconds(150))
+
+        withExtendedLifetime(observation) {
+            XCTAssertEqual(
+                publicationCount,
+                0,
+                "An unchanged background scan must not invalidate open menus"
+            )
+        }
     }
 
     private func makeFolder() throws -> URL {

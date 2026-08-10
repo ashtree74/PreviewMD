@@ -11,6 +11,9 @@ final class AppState: ObservableObject {
     @Published var displayMode: DisplayMode = .preview
     @Published var theme: PreviewTheme = .system
     @Published var readingStyle: ReadingStyle = .modern
+    @Published var customReadingPresets: [CustomReadingPreset] = []
+    @Published var selectedCustomPresetID: UUID?
+    @Published var editingCustomPreset: CustomReadingPreset?
     @Published var readingWidth: ReadingWidth = .comfortable
     @Published var customReadingWidth: Double = 820
     @Published var usesPaperCanvas = false
@@ -24,6 +27,10 @@ final class AppState: ObservableObject {
     @Published var outlineTarget: String?
     @Published var searchFieldFocusToken = UUID()
     @Published var sidebarSelection = ""
+    @Published var sidebarMode: SidebarMode = .recent
+    @Published var workspaceFileSort: WorkspaceFileSort = .name
+    @Published var workspaceSortAscending = true
+    @Published var liveReloadEnabled = true
     @Published var errorMessage: String?
     @Published private(set) var workspaceFolderURL: URL?
     @Published private(set) var workspaceFolderItems: [FolderTreeItem] = []
@@ -35,11 +42,15 @@ final class AppState: ObservableObject {
     private let recentKey = "recentDocuments.v1"
     private let themeKey = "previewTheme"
     private let styleKey = "readingStyle"
+    private let customStylesKey = "customReadingPresets.v1"
+    private let selectedCustomStyleKey = "selectedCustomReadingPreset"
     private let widthKey = "readingWidth"
     private let customWidthKey = "customReadingWidth"
     private let paperKey = "usesPaperCanvas"
+    private let liveReloadKey = "liveReloadEnabled"
     private var workspaceFolderRequestID = UUID()
     private var workspaceFolderLoadTask: Task<Void, Never>?
+    private var lastWorkspaceLiveRefresh = Date.distantPast
 
     /// Restored when focus mode ends, so entering it to read does not quietly
     /// throw away the split/source view or inspector you were working with.
@@ -50,6 +61,7 @@ final class AppState: ObservableObject {
         self.defaults = defaults
         loadPreferences()
         loadRecentDocuments()
+        startLiveReloadPolling()
     }
 
     var currentDocumentIndex: Int? {
@@ -72,6 +84,37 @@ final class AppState: ObservableObject {
             return Int(customReadingWidth.rounded())
         }
         return readingWidth.cssValue
+    }
+
+    var activeCustomReadingPreset: CustomReadingPreset? {
+        guard readingStyle == .custom else { return nil }
+        if let selectedCustomPresetID,
+           let preset = customReadingPresets.first(where: { $0.id == selectedCustomPresetID }) {
+            return preset.normalized
+        }
+        return customReadingPresets.first?.normalized
+    }
+
+    var workspaceFiles: [FolderTreeItem] {
+        let files = workspaceFolderItems.flatMap(\.flattenedFiles)
+        return files.sorted { lhs, rhs in
+            let result: ComparisonResult
+            switch workspaceFileSort {
+            case .name:
+                result = lhs.title.localizedStandardCompare(rhs.title)
+            case .modified:
+                let left = lhs.modificationDate ?? .distantPast
+                let right = rhs.modificationDate ?? .distantPast
+                if left == right {
+                    result = lhs.title.localizedStandardCompare(rhs.title)
+                } else {
+                    result = left < right ? .orderedAscending : .orderedDescending
+                }
+            }
+            return workspaceSortAscending
+                ? result == .orderedAscending
+                : result == .orderedDescending
+        }
     }
 
     func bindingForCurrentContent() -> Binding<String> {
@@ -229,6 +272,7 @@ final class AppState: ObservableObject {
     }
 
     func openFolder(url: URL) {
+        sidebarMode = .tree
         loadFolder(at: url.standardizedFileURL, clearsExistingItems: true)
     }
 
@@ -244,9 +288,14 @@ final class AppState: ObservableObject {
         workspaceFolderURL = nil
         workspaceFolderItems = []
         isWorkspaceFolderLoading = false
+        sidebarMode = .recent
     }
 
-    private func loadFolder(at url: URL, clearsExistingItems: Bool) {
+    private func loadFolder(
+        at url: URL,
+        clearsExistingItems: Bool,
+        showsLoading: Bool = true
+    ) {
         var isDirectory: ObjCBool = false
         guard url.isFileURL,
               FileManager.default.fileExists(
@@ -262,11 +311,18 @@ final class AppState: ObservableObject {
         let requestID = UUID()
         workspaceFolderLoadTask?.cancel()
         workspaceFolderRequestID = requestID
-        workspaceFolderURL = url
+        // Silent live scans run every two seconds. Reassigning the same
+        // @Published URL still emits objectWillChange, which causes SwiftUI to
+        // rebuild any open native menus and detach their submenus.
+        if workspaceFolderURL != url {
+            workspaceFolderURL = url
+        }
         if clearsExistingItems {
             workspaceFolderItems = []
         }
-        isWorkspaceFolderLoading = true
+        if showsLoading {
+            isWorkspaceFolderLoading = true
+        }
 
         workspaceFolderLoadTask = Task { [weak self] in
             let scanTask = Task.detached(priority: .userInitiated) {
@@ -279,20 +335,30 @@ final class AppState: ObservableObject {
                           self.workspaceFolderRequestID == requestID,
                           self.workspaceFolderURL == url
                     else { return }
-                    self.workspaceFolderItems = items
-                    self.isWorkspaceFolderLoading = false
+                    if self.workspaceFolderItems != items {
+                        self.workspaceFolderItems = items
+                    }
+                    if showsLoading {
+                        self.isWorkspaceFolderLoading = false
+                    }
                     self.workspaceFolderLoadTask = nil
                 } catch is CancellationError {
                     guard let self, self.workspaceFolderRequestID == requestID else { return }
-                    self.isWorkspaceFolderLoading = false
+                    if showsLoading {
+                        self.isWorkspaceFolderLoading = false
+                    }
                     self.workspaceFolderLoadTask = nil
                 } catch {
                     guard let self, self.workspaceFolderRequestID == requestID else { return }
-                    self.isWorkspaceFolderLoading = false
+                    if showsLoading {
+                        self.isWorkspaceFolderLoading = false
+                    }
                     self.workspaceFolderLoadTask = nil
-                    self.present(
-                        error: "Couldn’t read “\(url.lastPathComponent)”. \(error.localizedDescription)"
-                    )
+                    if showsLoading {
+                        self.present(
+                            error: "Couldn’t read “\(url.lastPathComponent)”. \(error.localizedDescription)"
+                        )
+                    }
                 }
             } onCancel: {
                 scanTask.cancel()
@@ -650,6 +716,7 @@ final class AppState: ObservableObject {
             documents[index].fileFormat = readResult.format
             documents[index].diskSnapshot = readResult.snapshot
             documents[index].fileModifiedAt = readResult.snapshot.modificationDate
+            documents[index].hasExternalChanges = false
             return true
         } catch {
             present(error: "Couldn’t reload “\(url.lastPathComponent)”. \(error.localizedDescription)")
@@ -685,6 +752,7 @@ final class AppState: ObservableObject {
             documents[index].lastSavedContent = documents[index].content
             documents[index].diskSnapshot = snapshot
             documents[index].fileModifiedAt = snapshot.modificationDate
+            documents[index].hasExternalChanges = false
             touchRecent(url)
             if updatesLocation, isInsideWorkspaceFolder(url) {
                 refreshWorkspaceFolder()
@@ -759,9 +827,25 @@ final class AppState: ObservableObject {
 
     func exportPDF() {
         guard let currentDocument else { return }
-        rendererController.exportPDF(suggestedName: "\(currentDocument.title).pdf") { [weak self] error in
+        rendererController.exportPDF(
+            suggestedName: "\(currentDocument.title).pdf",
+            initialStyle: readingStyle,
+            customPresets: customReadingPresets,
+            selectedCustomPresetID: selectedCustomPresetID
+        ) { [weak self] error in
             if let error {
                 self?.present(error: "Couldn’t export PDF. \(error.localizedDescription)")
+            }
+        }
+    }
+
+    func printCurrent() {
+        rendererController.printDocument(
+            style: readingStyle,
+            customPreset: activeCustomReadingPreset
+        ) { [weak self] error in
+            if let error {
+                self?.present(error: "Couldn’t print. \(error.localizedDescription)")
             }
         }
     }
@@ -779,12 +863,60 @@ final class AppState: ObservableObject {
         readingWidth = .custom
     }
 
+    func cycleReadingStyle() {
+        var styles: [ReadingStyle] = [.modern, .classic, .editorial]
+        if !customReadingPresets.isEmpty { styles.append(.custom) }
+        guard let index = styles.firstIndex(of: readingStyle) else {
+            readingStyle = styles[0]
+            return
+        }
+        readingStyle = styles[(index + 1) % styles.count]
+    }
+
+    func beginNewCustomPreset() {
+        editingCustomPreset = .starter
+    }
+
+    func beginEditingCustomPreset(_ preset: CustomReadingPreset) {
+        editingCustomPreset = preset
+    }
+
+    func saveCustomPreset(_ preset: CustomReadingPreset) {
+        let preset = preset.normalized
+        if let index = customReadingPresets.firstIndex(where: { $0.id == preset.id }) {
+            customReadingPresets[index] = preset
+        } else {
+            customReadingPresets.append(preset)
+        }
+        selectedCustomPresetID = preset.id
+        readingStyle = .custom
+        editingCustomPreset = nil
+        updatePreferences()
+    }
+
+    func deleteCustomPreset(_ preset: CustomReadingPreset) {
+        customReadingPresets.removeAll { $0.id == preset.id }
+        if selectedCustomPresetID == preset.id {
+            selectedCustomPresetID = customReadingPresets.first?.id
+        }
+        if customReadingPresets.isEmpty {
+            readingStyle = .modern
+        }
+        editingCustomPreset = nil
+        updatePreferences()
+    }
+
     func updatePreferences() {
         defaults.set(theme.rawValue, forKey: themeKey)
         defaults.set(readingStyle.rawValue, forKey: styleKey)
+        if let data = try? JSONEncoder().encode(customReadingPresets.map(\.normalized)) {
+            defaults.set(data, forKey: customStylesKey)
+        }
+        defaults.set(selectedCustomPresetID?.uuidString, forKey: selectedCustomStyleKey)
         defaults.set(readingWidth.rawValue, forKey: widthKey)
         defaults.set(customReadingWidth, forKey: customWidthKey)
         defaults.set(usesPaperCanvas, forKey: paperKey)
+        defaults.set(liveReloadEnabled, forKey: liveReloadKey)
     }
 
     private func loadPreferences() {
@@ -795,6 +927,16 @@ final class AppState: ObservableObject {
         if let rawStyle = defaults.string(forKey: styleKey),
            let savedStyle = ReadingStyle(rawValue: rawStyle) {
             readingStyle = savedStyle
+        }
+        if let data = defaults.data(forKey: customStylesKey),
+           let presets = try? JSONDecoder().decode([CustomReadingPreset].self, from: data) {
+            customReadingPresets = presets.map(\.normalized)
+        }
+        if let rawID = defaults.string(forKey: selectedCustomStyleKey) {
+            selectedCustomPresetID = UUID(uuidString: rawID)
+        }
+        if readingStyle == .custom, customReadingPresets.isEmpty {
+            readingStyle = .modern
         }
         if let rawWidth = defaults.string(forKey: widthKey),
            let savedWidth = ReadingWidth(rawValue: rawWidth) {
@@ -808,6 +950,53 @@ final class AppState: ObservableObject {
         }
         if defaults.object(forKey: paperKey) != nil {
             usesPaperCanvas = defaults.bool(forKey: paperKey)
+        }
+        if defaults.object(forKey: liveReloadKey) != nil {
+            liveReloadEnabled = defaults.bool(forKey: liveReloadKey)
+        }
+    }
+
+    private func startLiveReloadPolling() {
+        Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(750))
+                guard let self else { return }
+                self.pollForExternalChanges()
+            }
+        }
+    }
+
+    func pollForExternalChanges(now: Date = Date()) {
+        guard liveReloadEnabled else { return }
+
+        for index in documents.indices {
+            guard let url = documents[index].url,
+                  let savedSnapshot = documents[index].diskSnapshot,
+                  let currentSnapshot = try? FileSnapshot.capture(url: url),
+                  currentSnapshot.fingerprint != savedSnapshot.fingerprint
+            else { continue }
+
+            if documents[index].isDirty {
+                // Keep the conflict visible without publishing the same value
+                // on every 750 ms polling pass. Repeated publication also
+                // invalidates open menu hierarchies.
+                if !documents[index].hasExternalChanges {
+                    documents[index].hasExternalChanges = true
+                }
+            } else {
+                _ = reload(documentID: documents[index].id)
+            }
+        }
+
+        if let workspaceFolderURL,
+           !isWorkspaceFolderLoading,
+           now.timeIntervalSince(lastWorkspaceLiveRefresh) >= 2 {
+            lastWorkspaceLiveRefresh = now
+            loadFolder(
+                at: workspaceFolderURL,
+                clearsExistingItems: false,
+                showsLoading: false
+            )
         }
     }
 
