@@ -1,5 +1,7 @@
 import AppKit
+import CoreGraphics
 import Foundation
+import PDFKit
 import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
@@ -8,6 +10,10 @@ import WebKit
 final class RendererController: ObservableObject {
     private weak var webView: WKWebView?
     private var attachedDocumentID: UUID?
+    // PDFKit's print operation can hand work to Quartz after `run()` returns.
+    // Retain the immutable source and operation until a later print replaces them.
+    private var activePrintDocument: PDFDocument?
+    private var activePrintOperation: NSPrintOperation?
 
     func attach(_ webView: WKWebView, documentID: UUID) {
         self.webView = webView
@@ -69,13 +75,19 @@ final class RendererController: ObservableObject {
             return
         }
 
-        runPrintOperation(
-            in: webView,
-            options: accessory.options,
-            destinationURL: destinationURL,
-            showsPrintPanel: false,
-            completion: completion
-        )
+        generatePDFData(in: webView, options: accessory.options) { result in
+            switch result {
+            case .success(let data):
+                do {
+                    try data.write(to: destinationURL, options: .atomic)
+                    completion(nil)
+                } catch {
+                    completion(error)
+                }
+            case .failure(let error):
+                completion(error)
+            }
+        }
     }
 
     func printDocument(
@@ -97,74 +109,126 @@ final class RendererController: ObservableObject {
             margins: .normal,
             customPreset: customPreset
         )
-        runPrintOperation(
-            in: webView,
-            options: options,
-            destinationURL: nil,
-            showsPrintPanel: true,
-            completion: completion
-        )
-    }
-
-    private func runPrintOperation(
-        in webView: WKWebView,
-        options: PDFExportOptions,
-        destinationURL: URL?,
-        showsPrintPanel: Bool,
-        completion: @escaping ((any Error)?) -> Void
-    ) {
-        guard let data = try? JSONEncoder().encode(options),
-              let arguments = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else {
-            completion(RendererError.invalidPrintOptions)
-            return
-        }
-
-        Task { @MainActor [weak webView] in
-            guard let webView else {
+        generatePDFData(in: webView, options: options) { [weak self] result in
+            guard let self else {
                 completion(RendererError.rendererUnavailable)
                 return
             }
-            do {
-                _ = try await webView.callAsyncJavaScript(
-                    "await window.previewmdPreparePrint(options); return true;",
-                    arguments: ["options": arguments],
-                    contentWorld: .page
-                )
-                let printInfo = options.printInfo
-                if let destinationURL {
-                    printInfo.jobDisposition = .save
-                    printInfo.dictionary()[NSPrintInfo.AttributeKey.jobSavingURL] = destinationURL
+            switch result {
+            case .success(let data):
+                guard let document = PDFDocument(data: data),
+                      let operation = document.printOperation(
+                          for: options.printInfo,
+                          scalingMode: .pageScaleDownToFit,
+                          autoRotate: false
+                      )
+                else {
+                    completion(RendererError.invalidPDFOutput)
+                    return
                 }
-                let operation = webView.printOperation(with: printInfo)
-                operation.showsPrintPanel = showsPrintPanel
+                activePrintDocument = document
+                activePrintOperation = operation
+                operation.showsPrintPanel = true
                 operation.showsProgressPanel = true
-                let succeeded = operation.run()
-                _ = try? await webView.callAsyncJavaScript(
-                    "await window.previewmdFinishPrint(); return true;",
-                    arguments: [:],
-                    contentWorld: .page
-                )
-                completion(
-                    succeeded || showsPrintPanel
-                        ? nil
-                        : RendererError.printCancelledOrFailed
-                )
-            } catch {
-                _ = try? await webView.callAsyncJavaScript(
-                    "await window.previewmdFinishPrint(); return true;",
-                    arguments: [:],
-                    contentWorld: .page
-                )
+                _ = operation.run()
+                // Cancelling the native panel is not an application error.
+                completion(nil)
+            case .failure(let error):
                 completion(error)
             }
         }
     }
 
+    private func generatePDFData(
+        in webView: WKWebView,
+        options: PDFExportOptions,
+        completion: @escaping (Result<Data, any Error>) -> Void
+    ) {
+        guard let data = try? JSONEncoder().encode(options),
+              let arguments = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            completion(.failure(RendererError.invalidPrintOptions))
+            return
+        }
+
+        Task { @MainActor [weak webView] in
+            guard let webView else {
+                completion(.failure(RendererError.rendererUnavailable))
+                return
+            }
+            let printInfo = options.printInfo
+            let captureSize = printInfo.printableContentSize
+            let originalPageZoom = webView.pageZoom
+            var rendererIsPrepared = true
+            webView.pageZoom = 1
+            do {
+                let layoutJSON = try await webView.callAsyncJavaScript(
+                    """
+                    return await window.previewmdPreparePDF(
+                        options,
+                        contentWidth,
+                        contentHeight
+                    );
+                    """,
+                    arguments: [
+                        "options": arguments,
+                        "contentWidth": captureSize.width,
+                        "contentHeight": captureSize.height,
+                    ],
+                    contentWorld: .page
+                )
+                guard let layoutJSON = layoutJSON as? String,
+                      let layoutData = layoutJSON.data(using: .utf8),
+                      let layout = try? JSONDecoder().decode(PDFCaptureLayout.self, from: layoutData),
+                      layout.isValid
+                else {
+                    throw RendererError.invalidPDFLayout
+                }
+
+                let configuration = WKPDFConfiguration()
+                configuration.rect = CGRect(
+                    x: 0,
+                    y: 0,
+                    width: layout.width,
+                    height: layout.height
+                )
+                configuration.allowTransparentBackground = false
+                let sourceData = try await webView.pdf(configuration: configuration)
+
+                try await finishPDFPreparation(in: webView)
+                rendererIsPrepared = false
+                webView.pageZoom = originalPageZoom
+
+                let output = try PDFPaginator.paginate(
+                    sourceData: sourceData,
+                    layout: layout,
+                    paperSize: printInfo.paperSize,
+                    margins: options.margins.points
+                )
+                completion(.success(output))
+            } catch {
+                if rendererIsPrepared {
+                    try? await finishPDFPreparation(in: webView)
+                }
+                webView.pageZoom = originalPageZoom
+                completion(.failure(error))
+            }
+        }
+    }
+
+    private func finishPDFPreparation(in webView: WKWebView) async throws {
+        _ = try await webView.callAsyncJavaScript(
+            "await window.previewmdFinishPrint(); return true;",
+            arguments: [:],
+            contentWorld: .page
+        )
+    }
+
     private enum RendererError: LocalizedError {
         case rendererUnavailable
         case invalidPrintOptions
-        case printCancelledOrFailed
+        case invalidPDFLayout
+        case invalidPDFOutput
 
         var errorDescription: String? {
             switch self {
@@ -172,8 +236,126 @@ final class RendererController: ObservableObject {
                 "The preview renderer is not available."
             case .invalidPrintOptions:
                 "The PDF options could not be prepared."
-            case .printCancelledOrFailed:
-                "The print operation was cancelled or failed."
+            case .invalidPDFLayout:
+                "The printable document layout could not be measured."
+            case .invalidPDFOutput:
+                "The PDF renderer did not produce a valid document."
+            }
+        }
+    }
+}
+
+struct PDFCaptureLayout: Codable {
+    let width: CGFloat
+    let height: CGFloat
+    let pageBreaks: [CGFloat]
+
+    var isValid: Bool {
+        width.isFinite && width > 0
+            && height.isFinite && height > 0
+            && pageBreaks.count >= 2
+            && pageBreaks.first == 0
+            && pageBreaks.last == height
+            && zip(pageBreaks, pageBreaks.dropFirst()).allSatisfy(<)
+    }
+}
+
+enum PDFPaginator {
+    static func paginate(
+        sourceData: Data,
+        layout: PDFCaptureLayout,
+        paperSize: NSSize,
+        margins: CGFloat
+    ) throws -> Data {
+        guard let provider = CGDataProvider(data: sourceData as CFData),
+              let document = CGPDFDocument(provider),
+              document.numberOfPages == 1,
+              let sourcePage = document.page(at: 1)
+        else {
+            throw PDFCompositionError.invalidSource
+        }
+
+        let sourceBox = sourcePage.getBoxRect(.mediaBox)
+        let contentRect = CGRect(
+            x: margins,
+            y: margins,
+            width: paperSize.width - (2 * margins),
+            height: paperSize.height - (2 * margins)
+        )
+        guard sourceBox.width > 0, sourceBox.height > 0,
+              contentRect.width > 0, contentRect.height > 0
+        else {
+            throw PDFCompositionError.invalidGeometry
+        }
+
+        let output = NSMutableData()
+        guard let consumer = CGDataConsumer(data: output as CFMutableData) else {
+            throw PDFCompositionError.couldNotCreateOutput
+        }
+        var mediaBox = CGRect(origin: .zero, size: paperSize)
+        let metadata = [kCGPDFContextCreator: "PreviewMD"] as CFDictionary
+        guard let context = CGContext(
+            consumer: consumer,
+            mediaBox: &mediaBox,
+            metadata
+        ) else {
+            throw PDFCompositionError.couldNotCreateOutput
+        }
+
+        let horizontalScale = contentRect.width / sourceBox.width
+        let sourceUnitsPerLayoutPoint = sourceBox.height / layout.height
+        for (start, end) in zip(layout.pageBreaks, layout.pageBreaks.dropFirst()) {
+            let renderedHeight = (end - start) * sourceUnitsPerLayoutPoint * horizontalScale
+            guard renderedHeight <= contentRect.height + 1 else {
+                throw PDFCompositionError.invalidPageBreaks
+            }
+
+            context.beginPDFPage(nil)
+            context.saveGState()
+            context.clip(
+                to: CGRect(
+                    x: contentRect.minX,
+                    y: contentRect.maxY - renderedHeight,
+                    width: contentRect.width,
+                    height: renderedHeight
+                )
+            )
+
+            let sourceSegmentTop = sourceBox.maxY - (start * sourceUnitsPerLayoutPoint)
+            context.translateBy(
+                x: contentRect.minX - (sourceBox.minX * horizontalScale),
+                y: contentRect.maxY - (sourceSegmentTop * horizontalScale)
+            )
+            context.scaleBy(x: horizontalScale, y: horizontalScale)
+            context.drawPDFPage(sourcePage)
+            context.restoreGState()
+            context.endPDFPage()
+        }
+        context.closePDF()
+
+        let result = output as Data
+        guard !result.isEmpty else {
+            throw PDFCompositionError.couldNotCreateOutput
+        }
+        return result
+    }
+
+    private enum PDFCompositionError: LocalizedError {
+        case invalidSource
+        case invalidGeometry
+        case invalidPageBreaks
+        case couldNotCreateOutput
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidSource:
+                "The web renderer returned an invalid PDF page."
+            case .invalidGeometry:
+                "The selected paper size and margins leave no printable area."
+            case .invalidPageBreaks:
+                "The document could not be divided into printable pages."
+            case .couldNotCreateOutput:
+                "The paginated PDF could not be created."
             }
         }
     }
@@ -262,6 +444,15 @@ struct PDFExportOptions: Codable {
         info.isVerticallyCentered = false
         info.dictionary()[NSPrintInfo.AttributeKey.headerAndFooter] = false
         return info
+    }
+}
+
+private extension NSPrintInfo {
+    var printableContentSize: NSSize {
+        NSSize(
+            width: paperSize.width - leftMargin - rightMargin,
+            height: paperSize.height - topMargin - bottomMargin
+        )
     }
 }
 

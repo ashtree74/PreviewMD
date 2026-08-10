@@ -30,6 +30,54 @@ final class EditorWebViewTests: XCTestCase, WKNavigationDelegate {
         )
     }
 
+    func testWebViewPreparesPrintableContentAndPageBreaks() async throws {
+        let webView = try await makeEditor(markdown: "# Printable\n\nUnique print body")
+        let options = PDFExportOptions(
+            pageFormat: .a4,
+            orientation: .portrait,
+            theme: .light,
+            style: .modern,
+            margins: .normal,
+            customPreset: nil
+        )
+        let encodedOptions = try JSONEncoder().encode(options)
+        let arguments = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encodedOptions) as? [String: Any]
+        )
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const layout = JSON.parse(
+              await window.previewmdPreparePDF(options, 515, 761)
+            );
+            return {
+              layout: layout,
+              text: document.getElementById("preview-document").innerText,
+              exporting: document.documentElement.dataset.pdfExport,
+            };
+            """,
+            arguments: ["options": arguments],
+            contentWorld: .page
+        )
+        let output = try XCTUnwrap(result as? [String: Any])
+        let layoutObject = try XCTUnwrap(output["layout"] as? [String: Any])
+        let layoutData = try JSONSerialization.data(withJSONObject: layoutObject)
+        let layout = try JSONDecoder().decode(PDFCaptureLayout.self, from: layoutData)
+        XCTAssertTrue(layout.isValid)
+        XCTAssertEqual(layout.width, 515)
+        XCTAssertTrue((output["text"] as? String)?.contains("Unique print body") == true)
+        XCTAssertEqual(output["exporting"] as? String, "true")
+
+        _ = try await webView.callAsyncJavaScript(
+            "await window.previewmdFinishPrint(); return true;",
+            arguments: [:],
+            contentWorld: .page
+        )
+        let restored = try await webView.evaluateJavaScript(
+            "document.documentElement.dataset.pdfExport || null"
+        )
+        XCTAssertTrue(restored == nil || restored is NSNull)
+    }
+
     func testRelativeAndAbsoluteLocalImagesDecodeAndRoundTrip() async throws {
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("PreviewMD-local-image-\(UUID().uuidString)")

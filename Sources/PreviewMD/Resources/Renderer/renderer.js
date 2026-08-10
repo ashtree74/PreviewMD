@@ -954,7 +954,119 @@
     await window.previewmdRender(printOptions);
   };
 
+  function nextAnimationFrame() {
+    return new Promise((resolve) => {
+      let completed = false;
+      const finish = () => {
+        if (completed) return;
+        completed = true;
+        resolve();
+      };
+      window.requestAnimationFrame(finish);
+      window.setTimeout(finish, 50);
+    });
+  }
+
+  async function waitForPrintableAssets() {
+    if (document.fonts && document.fonts.ready) {
+      await Promise.race([
+        document.fonts.ready,
+        new Promise((resolve) => window.setTimeout(resolve, 1000)),
+      ]);
+    }
+    await Promise.all(
+      Array.from(article.querySelectorAll("img")).map((image) => {
+        if (image.complete) return Promise.resolve();
+        return new Promise((resolve) => {
+          image.addEventListener("load", resolve, { once: true });
+          image.addEventListener("error", resolve, { once: true });
+          window.setTimeout(resolve, 1000);
+        });
+      })
+    );
+    await nextAnimationFrame();
+    await nextAnimationFrame();
+  }
+
+  function printablePageBreaks(pageHeight, documentHeight) {
+    const avoidBreakInside = Array.from(
+      article.querySelectorAll(
+        ".frontmatter-card, .code-card, .diagram-card, .table-scroll, blockquote, img"
+      )
+    );
+    const headings = Array.from(article.querySelectorAll("h1, h2, h3"));
+    const breaks = [0];
+    let pageStart = 0;
+
+    while (pageStart + pageHeight < documentHeight) {
+      const idealEnd = pageStart + pageHeight;
+      const minimumUsefulPageHeight = Math.min(72, pageHeight * 0.15);
+      const candidates = [];
+
+      avoidBreakInside.forEach((element) => {
+        const rect = element.getBoundingClientRect();
+        const top = rect.top + window.scrollY;
+        const bottom = rect.bottom + window.scrollY;
+        if (
+          top > pageStart + minimumUsefulPageHeight &&
+          top < idealEnd &&
+          bottom > idealEnd &&
+          bottom - top <= pageHeight
+        ) {
+          candidates.push(top);
+        }
+      });
+
+      headings.forEach((heading) => {
+        const next = heading.nextElementSibling;
+        if (!next) return;
+        const headingRect = heading.getBoundingClientRect();
+        const nextRect = next.getBoundingClientRect();
+        const top = headingRect.top + window.scrollY;
+        const nextBottom = nextRect.bottom + window.scrollY;
+        if (
+          top > pageStart + minimumUsefulPageHeight &&
+          top < idealEnd &&
+          nextBottom > idealEnd
+        ) {
+          candidates.push(top);
+        }
+      });
+
+      const adjustedEnd = candidates.length
+        ? Math.max(pageStart + 1, Math.floor(Math.min.apply(null, candidates)))
+        : idealEnd;
+      breaks.push(adjustedEnd);
+      pageStart = adjustedEnd;
+    }
+
+    breaks.push(documentHeight);
+    return breaks;
+  }
+
+  window.previewmdPreparePDF = async function (options, contentWidth, contentHeight) {
+    await window.previewmdPreparePrint(options);
+    root.dataset.pdfExport = "true";
+    root.style.setProperty("--pdf-content-width", contentWidth + "px");
+    await waitForPrintableAssets();
+
+    const documentHeight = Math.max(
+      1,
+      Math.ceil(document.documentElement.scrollHeight),
+      Math.ceil(document.body.scrollHeight),
+      Math.ceil(shell.scrollHeight)
+    );
+    const pageBreaks = printablePageBreaks(contentHeight, documentHeight);
+    return JSON.stringify({
+      width: contentWidth,
+      height: documentHeight,
+      pageBreaks: pageBreaks,
+    });
+  };
+
   window.previewmdFinishPrint = async function () {
+    root.removeAttribute("data-pdf-export");
+    root.style.removeProperty("--pdf-content-width");
     if (!printRestoreOptions) return;
     const restore = printRestoreOptions;
     printRestoreOptions = null;

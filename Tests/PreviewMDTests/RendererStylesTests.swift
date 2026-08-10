@@ -90,6 +90,13 @@ final class RendererStylesTests: XCTestCase {
         XCTAssertFalse(css.contains("body,\n  #preview-shell {\n    background: white;"))
     }
 
+    func testPDFCaptureUsesNativeMarginsInsteadOfZeroPageMargins() throws {
+        let css = try rendererCSS()
+        XCTAssertFalse(css.contains("@page {\n    margin: 0;"))
+        XCTAssertTrue(css.contains(#":root[data-pdf-export="true"] #preview-document"#))
+        XCTAssertTrue(css.contains("width: var(--pdf-content-width);"))
+    }
+
     private func rendererCSS() throws -> String {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

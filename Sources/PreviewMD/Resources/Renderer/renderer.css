@@ -2115,11 +2115,78 @@ html.diagram-editor-expanded body {
   }
 }
 
-@media print {
-  @page {
-    margin: 0;
-  }
+/* WKWebView's PDF API captures the rendered document as one vector page.
+   Give that capture an exact printable width; Swift then composes it onto
+   physical pages with the selected native margins. */
+:root[data-pdf-export="true"],
+:root[data-pdf-export="true"] body {
+  width: var(--pdf-content-width);
+  min-width: var(--pdf-content-width);
+  min-height: 0;
+  color: var(--ink);
+  background: var(--page);
+}
 
+:root[data-pdf-export="true"] #preview-shell {
+  width: var(--pdf-content-width);
+  padding: 0;
+  background: var(--page);
+}
+
+:root[data-pdf-export="true"] #preview-document {
+  width: var(--pdf-content-width);
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+:root[data-pdf-export="true"] .table-scroll.is-wide,
+:root[data-pdf-export="true"] .table-scroll.is-expanded {
+  width: 100% !important;
+  max-width: 100%;
+  margin-left: 0;
+  --table-leading-gutter: 0px !important;
+}
+
+:root[data-pdf-export="true"] .table-viewport {
+  overflow-x: visible;
+}
+
+:root[data-pdf-export="true"] .table-sizer {
+  min-width: 0 !important;
+}
+
+:root[data-pdf-export="true"] table {
+  width: 100% !important;
+  min-width: 100%;
+}
+
+:root[data-pdf-export="true"] th,
+:root[data-pdf-export="true"] td {
+  min-width: 0;
+  max-width: none;
+}
+
+:root[data-pdf-export="true"] th {
+  white-space: normal;
+}
+
+:root[data-pdf-export="true"] #reading-progress,
+:root[data-pdf-export="true"] #top-blur,
+:root[data-pdf-export="true"] .copy-code,
+:root[data-pdf-export="true"] .table-expand,
+:root[data-pdf-export="true"] .heading-anchor,
+:root[data-pdf-export="true"] .editor-bubble-toolbar,
+:root[data-pdf-export="true"] .editor-object-source,
+:root[data-pdf-export="true"] .editor-block-inserter,
+:root[data-pdf-export="true"] .editor-markdown-composer {
+  display: none !important;
+}
+
+@media print {
   :root[data-theme="light"] {
     --page: white;
     --canvas: white;
