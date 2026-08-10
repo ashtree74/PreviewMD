@@ -968,6 +968,7 @@ enum RendererAssets {
     private static let autoRender = script(named: "auto-render.min")
     private static let mermaid = script(named: "mermaid.min")
     private static let renderer = script(named: "renderer")
+    private static let diagramEditor = script(named: "diagram-editor")
     private static let editor = script(named: "editor")
     private static let baseCSS = text(named: "renderer", extension: "css")
     private static let katexCSS = rewrittenKaTeXCSS()
@@ -1000,6 +1001,7 @@ enum RendererAssets {
           <script>\(autoRender)</script>
           <script>\(mermaid)</script>
           <script>\(renderer)</script>
+          <script>\(diagramEditor)</script>
           <script>\(editor)</script>
         </body>
         </html>

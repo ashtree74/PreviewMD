@@ -1101,6 +1101,7 @@
 
     if (!editable) {
       imagePickerPending = false;
+      if (window.PreviewMDDiagramEditor) window.PreviewMDDiagramEditor.close();
       hideToolbars();
       clearObjectSelection();
       const composer = document.querySelector(".editor-markdown-composer");
@@ -1494,6 +1495,8 @@
         node.remove();
       }
       scheduleChange(true, true);
+    } else if (type === "diagram" && window.PreviewMDDiagramEditor) {
+      openDiagramEditor(node);
     } else if (type === "code" || type === "diagram" || type === "frontmatter") {
       openObjectSourceEditor(node, type);
     } else if (type === "math") {
@@ -1506,6 +1509,27 @@
       scheduleChange(true, true);
       refreshFromCurrentDOM();
     }
+  }
+
+  function openDiagramEditor(node) {
+    const mermaid = node.querySelector(".mermaid");
+    if (!mermaid) return;
+    const source = mermaid.dataset.source || mermaid.textContent;
+    objectToolbar.hidden = true;
+    window.PreviewMDDiagramEditor.open({
+      card: node,
+      source: source,
+      onCancel: function () {
+        if (node.isConnected) selectObject(node);
+      },
+      onApply: function (nextSource) {
+        mermaid.dataset.source = nextSource;
+        mermaid.textContent = nextSource;
+        mermaid.classList.remove("rendered", "diagram-error");
+        scheduleChange(true, true);
+        refreshFromCurrentDOM();
+      },
+    });
   }
 
   function openObjectSourceEditor(node, type) {

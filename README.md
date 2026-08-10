@@ -9,7 +9,7 @@ A native macOS Markdown reader with a print-inspired preview, editing, tabs, out
 - Frontmatter metadata rendered as an editable card above the document title
 - A contextual selection toolbar for text, links, images, tables, code, diagrams, and math
 - A left-margin `+` menu on empty lines for inserting every supported Markdown block
-- Mermaid diagrams and charts
+- Mermaid diagrams and charts with an optional visual flowchart editor
 - KaTeX inline and display math
 - Syntax highlighting with copy buttons
 - Preview, syntax-colored source, and live split modes with native line wrapping

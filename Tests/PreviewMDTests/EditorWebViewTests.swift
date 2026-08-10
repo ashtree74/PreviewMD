@@ -204,6 +204,258 @@ final class EditorWebViewTests: XCTestCase, WKNavigationDelegate {
         XCTAssertTrue(serialized.contains("Inline math: $a^2 + b^2$."))
     }
 
+    func testVisualDiagramModelParsesAndSerializesCommonFlowcharts() async throws {
+        let markdown = """
+        ```mermaid
+        flowchart LR
+          A[Open Markdown] --> B{Choose a view}
+          B -->|Preview| C[Read beautifully]
+          B -->|Split| D[Edit live]
+          B -->|Source| E[Focus on text]
+          C --> F[Export PDF]
+          D --> F
+          E --> D
+        ```
+        """
+        let webView = try await makeEditor(markdown: markdown)
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const source = document.querySelector(".mermaid").dataset.source;
+            const parsed = window.PreviewMDDiagramEditor.parse(source);
+            return {
+              ok: parsed.ok,
+              direction: parsed.model && parsed.model.direction,
+              nodes: parsed.model && parsed.model.nodes.map(
+                (node) => [node.id, node.label, node.shape].join("|")
+              ),
+              edges: parsed.model && parsed.model.edges.map(
+                (edge) => [edge.from, edge.kind, edge.label, edge.to].join("|")
+              ),
+              serialized: parsed.ok
+                ? window.PreviewMDDiagramEditor.serialize(parsed.model)
+                : "",
+            };
+            """,
+            contentWorld: .page
+        )
+        let response = try XCTUnwrap(result as? [String: Any])
+
+        XCTAssertEqual(response["ok"] as? Bool, true)
+        XCTAssertEqual(response["direction"] as? String, "LR")
+        XCTAssertEqual(
+            response["nodes"] as? [String],
+            [
+                "A|Open Markdown|rectangle",
+                "B|Choose a view|diamond",
+                "C|Read beautifully|rectangle",
+                "D|Edit live|rectangle",
+                "E|Focus on text|rectangle",
+                "F|Export PDF|rectangle",
+            ]
+        )
+        XCTAssertEqual((response["edges"] as? [String])?.count, 7)
+        let serialized = try XCTUnwrap(response["serialized"] as? String)
+        XCTAssertTrue(serialized.contains("B{\"Choose a view\"}"))
+        XCTAssertTrue(serialized.contains("B -->|Preview| C"))
+        XCTAssertTrue(serialized.contains("E --> D"))
+    }
+
+    func testVisualDiagramEditorChangesNodesConnectionsAndDirection() async throws {
+        let markdown = """
+        ```mermaid
+        flowchart LR
+          A[Start] --> B[Finish]
+        ```
+        """
+        let webView = try await makeEditor(markdown: markdown)
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const card = document.querySelector(".diagram-card");
+            card.click();
+            document.querySelector(
+              '#object-toolbar [data-object-action="edit"]'
+            ).click();
+
+            document.querySelector('.diagram-node[data-node-id="B"]').click();
+            let label = document.querySelector("[data-node-label]");
+            label.value = "Decision";
+            label.dispatchEvent(new Event("input", { bubbles: true }));
+            const shape = document.querySelector(".diagram-property-field select");
+            shape.value = "diamond";
+            shape.dispatchEvent(new Event("change", { bubbles: true }));
+
+            document.querySelector("[data-diagram-add-node]").click();
+            label = document.querySelector("[data-node-label]");
+            label.value = "Publish";
+            label.dispatchEvent(new Event("input", { bubbles: true }));
+            Array.from(document.querySelectorAll(".diagram-property-actions button"))
+              .find((button) => button.textContent === "Connect…")
+              .click();
+            document.querySelector('.diagram-node[data-node-id="B"]').click();
+
+            const direction = document.querySelector("[data-diagram-direction]");
+            direction.value = "TB";
+            direction.dispatchEvent(new Event("change", { bubbles: true }));
+            document.querySelector("[data-diagram-apply]").click();
+
+            for (let index = 0; index < 80; index += 1) {
+              if (!document.querySelector(".diagram-editor")) break;
+              await new Promise((resolve) => setTimeout(resolve, 25));
+            }
+            return {
+              applied: !document.querySelector(".diagram-editor"),
+              markdown: window.previewmdFlushEditor(),
+              error: document.querySelector(".diagram-editor-status")?.textContent || "",
+            };
+            """,
+            contentWorld: .page
+        )
+        let response = try XCTUnwrap(result as? [String: Any])
+        let serialized = try XCTUnwrap(response["markdown"] as? String)
+
+        XCTAssertEqual(response["applied"] as? Bool, true, response["error"] as? String ?? "")
+        XCTAssertTrue(serialized.contains("flowchart TB"))
+        XCTAssertTrue(serialized.contains("B{\"Decision\"}"))
+        XCTAssertTrue(serialized.contains("N1[\"Publish\"]"))
+        XCTAssertTrue(serialized.contains("N1 --> B"))
+        XCTAssertTrue(serialized.contains("A --> B"))
+    }
+
+    func testDiagramEditorExpandsToWorkspaceAndEscapeRestoresInlineEditor() async throws {
+        let markdown = """
+        ```mermaid
+        flowchart LR
+          A[Start] --> B[Finish]
+        ```
+        """
+        let webView = try await makeEditor(markdown: markdown)
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const card = document.querySelector(".diagram-card");
+            card.click();
+            document.querySelector(
+              '#object-toolbar [data-object-action="edit"]'
+            ).click();
+            const editor = document.querySelector(".diagram-editor");
+            const expand = editor.querySelector("[data-diagram-expand]");
+            const inlineRect = editor.getBoundingClientRect();
+            expand.click();
+            const expandedRect = editor.getBoundingClientRect();
+            const expanded = {
+              classApplied: editor.classList.contains("is-workspace-expanded"),
+              scrollLocked: document.documentElement.classList.contains(
+                "diagram-editor-expanded"
+              ),
+              pressed: expand.getAttribute("aria-pressed"),
+              width: expandedRect.width,
+              height: expandedRect.height,
+              inlineWidth: inlineRect.width,
+              viewportWidth: window.innerWidth,
+              viewportHeight: window.innerHeight,
+            };
+
+            editor.dispatchEvent(
+              new KeyboardEvent("keydown", {
+                key: "Escape",
+                bubbles: true,
+                cancelable: true,
+              })
+            );
+            const collapsed = {
+              editorStillOpen: editor.isConnected,
+              classApplied: editor.classList.contains("is-workspace-expanded"),
+              scrollLocked: document.documentElement.classList.contains(
+                "diagram-editor-expanded"
+              ),
+              pressed: expand.getAttribute("aria-pressed"),
+            };
+
+            expand.click();
+            editor.querySelector("[data-diagram-cancel]").click();
+            return {
+              expanded,
+              collapsed,
+              cleanedAfterCancel: !document.documentElement.classList.contains(
+                "diagram-editor-expanded"
+              ),
+              editorClosed: !document.querySelector(".diagram-editor"),
+              markdown: window.previewmdFlushEditor(),
+            };
+            """,
+            contentWorld: .page
+        )
+        let response = try XCTUnwrap(result as? [String: Any])
+        let expanded = try XCTUnwrap(response["expanded"] as? [String: Any])
+        let collapsed = try XCTUnwrap(response["collapsed"] as? [String: Any])
+
+        XCTAssertEqual(expanded["classApplied"] as? Bool, true)
+        XCTAssertEqual(expanded["scrollLocked"] as? Bool, true)
+        XCTAssertEqual(expanded["pressed"] as? String, "true")
+        XCTAssertGreaterThan(
+            expanded["width"] as? Double ?? 0,
+            expanded["inlineWidth"] as? Double ?? .infinity
+        )
+        XCTAssertEqual(
+            expanded["width"] as? Double ?? .nan,
+            expanded["viewportWidth"] as? Double ?? .infinity,
+            accuracy: 1
+        )
+        XCTAssertEqual(
+            expanded["height"] as? Double ?? .nan,
+            expanded["viewportHeight"] as? Double ?? .infinity,
+            accuracy: 1
+        )
+        XCTAssertEqual(collapsed["editorStillOpen"] as? Bool, true)
+        XCTAssertEqual(collapsed["classApplied"] as? Bool, false)
+        XCTAssertEqual(collapsed["scrollLocked"] as? Bool, false)
+        XCTAssertEqual(collapsed["pressed"] as? String, "false")
+        XCTAssertEqual(response["cleanedAfterCancel"] as? Bool, true)
+        XCTAssertEqual(response["editorClosed"] as? Bool, true)
+        XCTAssertEqual(response["markdown"] as? String, markdown)
+    }
+
+    func testAdvancedMermaidOpensInCodeModeWithoutRewritingSource() async throws {
+        let markdown = """
+        ```mermaid
+        flowchart LR
+          subgraph Cluster
+            A --> B
+          end
+          style A fill:#f9f
+        ```
+        """
+        let webView = try await makeEditor(markdown: markdown)
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const card = document.querySelector(".diagram-card");
+            card.click();
+            document.querySelector(
+              '#object-toolbar [data-object-action="edit"]'
+            ).click();
+            const editor = document.querySelector(".diagram-editor");
+            const initialMode = editor.dataset.mode;
+            editor.querySelector('[data-diagram-mode="visual"]').click();
+            const result = {
+              initialMode,
+              finalMode: editor.dataset.mode,
+              warning: editor.querySelector(".diagram-editor-status").textContent,
+              source: editor.querySelector(".diagram-code-pane textarea").value,
+            };
+            editor.querySelector("[data-diagram-cancel]").click();
+            result.markdown = window.previewmdFlushEditor();
+            return result;
+            """,
+            contentWorld: .page
+        )
+        let response = try XCTUnwrap(result as? [String: Any])
+
+        XCTAssertEqual(response["initialMode"] as? String, "code")
+        XCTAssertEqual(response["finalMode"] as? String, "code")
+        XCTAssertTrue((response["warning"] as? String)?.contains("advanced diagram syntax") == true)
+        XCTAssertTrue((response["source"] as? String)?.contains("subgraph Cluster") == true)
+        XCTAssertEqual(response["markdown"] as? String, markdown)
+    }
+
     func testTaskAndTableEditsSerializeBackToSource() async throws {
         let markdown = """
         - [ ] Ship it

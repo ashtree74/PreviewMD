@@ -1494,6 +1494,554 @@ th.editor-selected-object {
   tab-size: 2;
 }
 
+/* Diagram editing deliberately lives inside the rendered Mermaid card. The
+   resulting source remains an ordinary fenced Mermaid block in the document;
+   this surface is only a direct-manipulation view over that source. */
+.diagram-card.is-editing-diagram {
+  overflow: visible;
+}
+
+.diagram-card.is-editing-diagram > .diagram-label,
+.diagram-card.is-editing-diagram > .mermaid {
+  display: none;
+}
+
+.diagram-editor {
+  position: relative;
+  display: flex;
+  min-height: 480px;
+  flex-direction: column;
+  color: var(--ink);
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--page) 96%, var(--accent-soft));
+  box-shadow: 0 18px 52px color-mix(in srgb, var(--ink) 12%, transparent);
+  font: 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  cursor: default;
+  user-select: none;
+}
+
+html.diagram-editor-expanded,
+html.diagram-editor-expanded body {
+  overflow: hidden;
+}
+
+.diagram-editor.is-workspace-expanded {
+  position: fixed;
+  z-index: 240;
+  inset: 0;
+  width: auto;
+  height: 100vh;
+  min-height: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.diagram-editor.is-workspace-expanded .diagram-editor-header {
+  border-radius: 0;
+}
+
+.diagram-editor [hidden] {
+  display: none !important;
+}
+
+.diagram-editor-header {
+  display: flex;
+  min-height: 46px;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--line);
+  border-radius: 11px 11px 0 0;
+  background: color-mix(in srgb, var(--code-bg) 58%, var(--page));
+}
+
+.diagram-editor button,
+.diagram-editor select,
+.diagram-editor input,
+.diagram-editor textarea {
+  color: inherit;
+  font: inherit;
+}
+
+.diagram-editor-header button,
+.diagram-visual-actions select,
+.diagram-property-actions button {
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, var(--line-strong) 72%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--page) 82%, var(--code-bg));
+  box-shadow: 0 1px 1px color-mix(in srgb, var(--ink) 7%, transparent);
+}
+
+.diagram-editor-header button:hover,
+.diagram-property-actions button:hover,
+.diagram-visual-actions select:hover {
+  background: color-mix(in srgb, var(--accent-soft) 62%, var(--page));
+}
+
+.diagram-editor-header button:focus-visible,
+.diagram-editor select:focus-visible,
+.diagram-editor input:focus-visible,
+.diagram-editor textarea:focus-visible,
+.diagram-node:focus-visible,
+.diagram-canvas:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 75%, transparent);
+  outline-offset: 1px;
+}
+
+.diagram-editor-header button.is-primary {
+  color: white;
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.diagram-editor-header button:disabled {
+  opacity: 0.55;
+}
+
+.diagram-expand-button {
+  display: grid;
+  width: 30px;
+  padding: 0 !important;
+  place-items: center;
+}
+
+.diagram-expand-button svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.45;
+}
+
+.diagram-collapse-icon,
+.diagram-editor.is-workspace-expanded .diagram-expand-icon {
+  display: none;
+}
+
+.diagram-editor.is-workspace-expanded .diagram-collapse-icon {
+  display: block;
+}
+
+.diagram-mode-picker {
+  display: flex;
+  padding: 2px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+}
+
+.diagram-mode-picker button {
+  height: 24px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.diagram-mode-picker button.is-selected {
+  background: var(--page);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--ink) 16%, transparent);
+}
+
+.diagram-visual-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.diagram-visual-actions label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.diagram-visual-actions select {
+  max-width: 128px;
+}
+
+.diagram-editor-spacer {
+  flex: 1;
+}
+
+.diagram-editor-status {
+  padding: 8px 12px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--accent-soft) 42%, var(--page));
+  user-select: text;
+}
+
+.diagram-editor-status[data-kind="warning"] {
+  color: color-mix(in srgb, #a16207 86%, var(--ink));
+  background: color-mix(in srgb, #f5b942 12%, var(--page));
+}
+
+.diagram-editor-status[data-kind="error"] {
+  color: color-mix(in srgb, #c43e47 88%, var(--ink));
+  background: color-mix(in srgb, #c43e47 10%, var(--page));
+}
+
+.diagram-visual-pane {
+  display: grid;
+  min-height: 434px;
+  grid-template-columns: minmax(0, 1fr) 202px;
+}
+
+.diagram-editor.is-workspace-expanded .diagram-visual-pane {
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.diagram-editor[data-mode="code"] .diagram-visual-pane,
+.diagram-editor[data-mode="visual"] .diagram-code-pane {
+  display: none;
+}
+
+.diagram-canvas {
+  position: relative;
+  min-width: 0;
+  min-height: 434px;
+  overflow: auto;
+  border-right: 1px solid var(--line);
+  background-color: color-mix(in srgb, var(--page) 97%, var(--accent-soft));
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--line) 40%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--line) 40%, transparent) 1px, transparent 1px);
+  background-size: 20px 20px;
+  outline: 0;
+  overscroll-behavior: contain;
+}
+
+.diagram-editor.is-workspace-expanded .diagram-canvas {
+  min-height: 0;
+}
+
+.diagram-stage {
+  position: relative;
+  min-width: 100%;
+  min-height: 100%;
+}
+
+.diagram-edge-layer,
+.diagram-node-layer {
+  position: absolute;
+  inset: 0;
+}
+
+.diagram-node-layer {
+  pointer-events: none;
+}
+
+.diagram-edge-layer {
+  overflow: visible;
+}
+
+.diagram-edge {
+  color: color-mix(in srgb, var(--muted) 86%, var(--ink));
+}
+
+.diagram-edge-path {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.6;
+}
+
+.diagram-edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 16;
+  pointer-events: stroke;
+}
+
+.diagram-edge:hover,
+.diagram-edge.is-selected {
+  color: var(--accent);
+}
+
+.diagram-edge.is-selected .diagram-edge-path {
+  stroke-width: 2.7;
+}
+
+.diagram-edge.is-dotted .diagram-edge-path {
+  stroke-dasharray: 5 5;
+}
+
+.diagram-edge.is-thick .diagram-edge-path {
+  stroke-width: 3.4;
+}
+
+.diagram-edge-path.is-connecting {
+  color: var(--accent);
+  stroke-dasharray: 5 4;
+  stroke-width: 2;
+}
+
+.diagram-edge-layer marker path {
+  fill: context-stroke;
+}
+
+.diagram-edge-label {
+  fill: var(--ink);
+  stroke: var(--page);
+  stroke-linejoin: round;
+  stroke-width: 5px;
+  paint-order: stroke fill;
+  font-size: 11px;
+  pointer-events: none;
+}
+
+.diagram-node {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 12px;
+  overflow: visible;
+  color: var(--ink);
+  border: 1.5px solid color-mix(in srgb, var(--accent) 68%, var(--line-strong));
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--accent-soft) 62%, var(--page));
+  box-shadow: 0 3px 9px color-mix(in srgb, var(--ink) 10%, transparent);
+  font-weight: 500;
+  line-height: 1.2;
+  text-align: center;
+  white-space: pre-wrap;
+  cursor: grab;
+  touch-action: none;
+  pointer-events: auto;
+}
+
+.diagram-node:hover {
+  border-color: var(--accent);
+  box-shadow: 0 5px 14px color-mix(in srgb, var(--ink) 14%, transparent);
+}
+
+.diagram-node.is-selected {
+  border-color: var(--accent);
+  outline: 3px solid color-mix(in srgb, var(--accent) 20%, transparent);
+  outline-offset: 2px;
+}
+
+.diagram-node.is-dragging {
+  z-index: 2;
+  cursor: grabbing;
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--ink) 20%, transparent);
+}
+
+.diagram-node[data-shape="rounded"],
+.diagram-node[data-shape="stadium"] {
+  border-radius: 18px;
+}
+
+.diagram-node[data-shape="stadium"],
+.diagram-node[data-shape="circle"] {
+  border-radius: 999px;
+}
+
+.diagram-node[data-shape="diamond"] {
+  padding: 14px 25px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  isolation: isolate;
+}
+
+.diagram-node[data-shape="diamond"].is-selected {
+  outline: 0;
+}
+
+.diagram-node[data-shape="diamond"].is-selected::before {
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--accent) 44%, transparent));
+}
+
+.diagram-node[data-shape="diamond"]::before {
+  position: absolute;
+  z-index: -2;
+  inset: 0;
+  background: var(--accent);
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+  content: "";
+}
+
+.diagram-node[data-shape="diamond"]::after {
+  position: absolute;
+  z-index: -1;
+  inset: 2px;
+  background: color-mix(in srgb, var(--accent-soft) 62%, var(--page));
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+  content: "";
+}
+
+.diagram-node[data-shape="subroutine"]::before,
+.diagram-node[data-shape="subroutine"]::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: color-mix(in srgb, var(--accent) 68%, var(--line-strong));
+  content: "";
+}
+
+.diagram-node[data-shape="subroutine"]::before {
+  left: 8px;
+}
+
+.diagram-node[data-shape="subroutine"]::after {
+  right: 8px;
+}
+
+.diagram-node[data-shape="database"] {
+  border-radius: 50% / 14px;
+}
+
+.diagram-connect-handle {
+  position: absolute;
+  z-index: 4;
+  top: 50%;
+  right: -11px;
+  display: flex;
+  width: 21px;
+  height: 21px;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  border: 2px solid var(--page);
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 2px 5px color-mix(in srgb, var(--ink) 18%, transparent);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1;
+  transform: translateY(-50%);
+  cursor: crosshair;
+  clip-path: none;
+}
+
+.diagram-properties {
+  min-width: 0;
+  padding: 14px 12px;
+  overflow: auto;
+  background: color-mix(in srgb, var(--code-bg) 32%, var(--page));
+}
+
+.diagram-properties-title {
+  margin-bottom: 13px;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diagram-properties-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.diagram-property-field {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 11px;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 550;
+}
+
+.diagram-property-field input,
+.diagram-property-field select {
+  width: 100%;
+  height: 28px;
+  padding: 0 7px;
+  color: var(--ink);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--page);
+  outline: 0;
+  user-select: text;
+}
+
+.diagram-property-actions {
+  display: grid;
+  gap: 6px;
+  margin-top: 15px;
+}
+
+.diagram-property-actions button.is-destructive {
+  color: #c43e47;
+}
+
+.diagram-code-pane {
+  display: flex;
+  min-height: 434px;
+}
+
+.diagram-editor.is-workspace-expanded .diagram-code-pane {
+  min-height: 0;
+  flex: 1;
+}
+
+.diagram-code-pane textarea {
+  flex: 1;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 434px;
+  padding: 18px;
+  resize: vertical;
+  color: var(--code-ink);
+  border: 0;
+  outline: 0;
+  background: var(--code-bg);
+  font: 12.5px/1.6 var(--font-mono);
+  tab-size: 2;
+  user-select: text;
+}
+
+.diagram-editor.is-workspace-expanded .diagram-code-pane textarea {
+  min-height: 0;
+  resize: none;
+}
+
+@media (max-width: 720px) {
+  .diagram-editor-header {
+    flex-wrap: wrap;
+  }
+
+  .diagram-editor-spacer {
+    min-width: 12px;
+  }
+
+  .diagram-visual-actions label {
+    gap: 0;
+    font-size: 0;
+  }
+
+  .diagram-visual-actions label select {
+    font-size: 11px;
+  }
+
+  .diagram-visual-pane {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .diagram-canvas {
+    min-height: 360px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .diagram-properties {
+    min-height: 150px;
+  }
+}
+
 #render-error {
   position: fixed;
   right: 24px;
@@ -1534,6 +2082,11 @@ th.editor-selected-object {
     --ink: #1e2026;
     --muted: #555963;
     --line: #dfe1e6;
+  }
+
+  html.diagram-editor-expanded,
+  html.diagram-editor-expanded body {
+    overflow: visible;
   }
 
   body,
@@ -1595,9 +2148,18 @@ th.editor-selected-object {
   .heading-anchor,
   .editor-bubble-toolbar,
   .editor-object-source,
+  .diagram-editor,
   .editor-block-inserter,
   .editor-markdown-composer {
     display: none !important;
+  }
+
+  .diagram-card.is-editing-diagram > .diagram-label {
+    display: block;
+  }
+
+  .diagram-card.is-editing-diagram > .mermaid {
+    display: flex;
   }
 
   .frontmatter-card {
