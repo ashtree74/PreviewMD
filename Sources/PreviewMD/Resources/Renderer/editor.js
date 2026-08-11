@@ -1711,6 +1711,16 @@
     return blocks.join("\n\n").replace(/\n{4,}/g, "\n\n\n") + (blocks.length ? "\n" : "");
   }
 
+  function serializeFragment(container) {
+    if (!container) return "";
+    const blocks = [];
+    Array.from(container.childNodes).forEach((node) => {
+      const value = serializeBlock(node).trimEnd();
+      if (value) blocks.push(value);
+    });
+    return blocks.join("\n\n").replace(/\n{4,}/g, "\n\n\n");
+  }
+
   function serializeBlock(node) {
     if (node.nodeType === Node.TEXT_NODE) return escapeText(node.nodeValue.trim());
     if (node.nodeType !== Node.ELEMENT_NODE) return "";
@@ -2909,6 +2919,7 @@
   window.previewmdEditorDidRender = editorDidRender;
   window.previewmdFlushEditor = flushEditor;
   window.previewmdSerializeEditor = serializeDocument;
+  window.previewmdSerializeFragment = serializeFragment;
   window.previewmdInsertBlock = insertBlock;
   window.previewmdInsertPickedImage = insertPickedImage;
   window.previewmdCancelPickedImage = cancelPickedImage;

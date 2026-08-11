@@ -138,6 +138,17 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertEqual(occurrences, 1, "The shortcut must have one active menu owner")
     }
 
+    func testCommandsOfferAdvancedCopyAndSemanticDOCXExport() throws {
+        let source = try previewMDAppSource()
+
+        XCTAssertTrue(source.contains(#"Button("Export as DOCX…")"#))
+        XCTAssertTrue(source.contains(#"Menu("Advanced Copy")"#))
+        XCTAssertTrue(source.contains("AdvancedCopyFormat.pages.title"))
+        XCTAssertTrue(source.contains("AdvancedCopyFormat.word.title"))
+        XCTAssertTrue(source.contains("AdvancedCopyFormat.docxFile.title"))
+        XCTAssertTrue(source.contains("AdvancedCopyFormat.image.title"))
+    }
+
     private func workspaceSource() throws -> String {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

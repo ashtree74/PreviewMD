@@ -667,6 +667,564 @@
     });
   }
 
+  const clipboardAssetURLPrefix = "previewmd-copy-asset:";
+  let clipboardAssetSequence = 0;
+
+  function portableCopyAtomicRoot(node) {
+    const element =
+      node && node.nodeType === Node.ELEMENT_NODE ? node : node && node.parentElement;
+    if (!element) return null;
+    const displayMath = element.closest(".katex-display");
+    return displayMath || element.closest(".katex, .diagram-card, img");
+  }
+
+  function rangeForPortableCopy() {
+    const selection = window.getSelection();
+    if (selection && selection.rangeCount && !selection.isCollapsed) {
+      const range = selection.getRangeAt(0);
+      const common =
+        range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+          ? range.commonAncestorContainer
+          : range.commonAncestorContainer.parentElement;
+      if (common && (common === article || article.contains(common))) {
+        const adjusted = range.cloneRange();
+        const startObject = portableCopyAtomicRoot(range.startContainer);
+        const endObject = portableCopyAtomicRoot(range.endContainer);
+        if (startObject && article.contains(startObject)) adjusted.setStartBefore(startObject);
+        if (endObject && article.contains(endObject)) adjusted.setEndAfter(endObject);
+        return adjusted;
+      }
+    }
+
+    // The visual editor represents selected formulas, diagrams, images, and
+    // tables as objects rather than DOM text selections. Cmd-C should still
+    // copy that object through the same portable path.
+    const selectedObject = article.querySelector(".editor-selected-object");
+    if (!selectedObject) return null;
+    const range = document.createRange();
+    range.selectNode(selectedObject);
+    return range;
+  }
+
+  function rangeIntersectsNode(range, node) {
+    try {
+      return range.intersectsNode(node);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function mathSource(node) {
+    const annotation = node.querySelector(
+      '.katex-mathml annotation[encoding="application/x-tex"]'
+    );
+    return annotation ? annotation.textContent.trim() : "Formula";
+  }
+
+  function serializedDiagramSVG(node) {
+    const source = node.querySelector(".mermaid svg");
+    if (!source) return "";
+    const svg = source.cloneNode(true);
+    if (!svg.getAttribute("xmlns")) {
+      svg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    }
+    return new XMLSerializer().serializeToString(svg);
+  }
+
+  function fittedPortableCopySize(width, height, maxWidth, maxHeight) {
+    const safeWidth = Math.max(1, Number(width) || 1);
+    const safeHeight = Math.max(1, Number(height) || 1);
+    const scale = Math.min(1, maxWidth / safeWidth, maxHeight / safeHeight);
+    return {
+      width: Math.max(1, safeWidth * scale),
+      height: Math.max(1, safeHeight * scale),
+    };
+  }
+
+  function portableCopyDisplaySize(kind, rootNode, isBlock, width, height) {
+    if (kind === "diagram") {
+      return fittedPortableCopySize(width, height, 420, 320);
+    }
+    if (kind === "math") {
+      return isBlock
+        ? fittedPortableCopySize(width, height, 420, 112)
+        : fittedPortableCopySize(width, height, 280, 42);
+    }
+    if (rootNode.classList.contains("markdown-badge")) {
+      return fittedPortableCopySize(width, height, 180, 20);
+    }
+    return isBlock
+      ? fittedPortableCopySize(width, height, 360, 360)
+      : fittedPortableCopySize(width, height, 240, 80);
+  }
+
+  function visibleMathBounds(rootNode, fallbackNode) {
+    const html = rootNode.querySelector(".katex-html");
+    if (!html) return fallbackNode.getBoundingClientRect();
+    const rows = Array.from(html.children).filter(
+      (child) => child.classList.contains("base") || child.classList.contains("tag")
+    );
+    if (!rows.length) return html.getBoundingClientRect();
+
+    let left = Infinity;
+    let top = Infinity;
+    let right = -Infinity;
+    let bottom = -Infinity;
+    rows.forEach((row) => {
+      const rect = row.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      left = Math.min(left, rect.left);
+      top = Math.min(top, rect.top);
+      right = Math.max(right, rect.right);
+      bottom = Math.max(bottom, rect.bottom);
+    });
+    if (!Number.isFinite(left)) return html.getBoundingClientRect();
+    return { width: right - left, height: bottom - top };
+  }
+
+  function collectPortableCopyAssets(range) {
+    const roots = [];
+    article.querySelectorAll(".katex-display").forEach((node) => roots.push(node));
+    article.querySelectorAll(".katex").forEach((node) => {
+      if (!node.closest(".katex-display")) roots.push(node);
+    });
+    article.querySelectorAll(".diagram-card, img").forEach((node) => roots.push(node));
+    roots.sort((left, right) => {
+      if (left === right) return 0;
+      return left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING
+        ? -1
+        : 1;
+    });
+
+    const assets = [];
+    const markedRoots = [];
+    roots.forEach((rootNode) => {
+      if (!rangeIntersectsNode(range, rootNode)) return;
+
+      const id =
+        "asset-" + Date.now().toString(36) + "-" + (++clipboardAssetSequence).toString(36);
+      let kind = "image";
+      let label = rootNode.getAttribute("alt") || "Image";
+      let snapshotNode = rootNode;
+      let svg = "";
+      let markup = "";
+      let isBlock = false;
+
+      if (rootNode.classList.contains("katex-display")) {
+        kind = "math";
+        const source = mathSource(rootNode);
+        label = source === "Formula" ? source : "$$" + source + "$$";
+        snapshotNode = rootNode.querySelector(".katex") || rootNode;
+        isBlock = true;
+      } else if (rootNode.classList.contains("katex")) {
+        kind = "math";
+        const source = mathSource(rootNode);
+        label = source === "Formula" ? source : "$" + source + "$";
+      } else if (rootNode.classList.contains("diagram-card")) {
+        kind = "diagram";
+        label = "Diagram";
+        snapshotNode = rootNode.querySelector(".mermaid svg") || rootNode;
+        svg = serializedDiagramSVG(rootNode);
+        isBlock = true;
+      } else {
+        isBlock = window.getComputedStyle(rootNode).display === "block";
+      }
+
+      // A display KaTeX node is a full-width centering container. Measuring
+      // that wrapper would create a page-wide attachment with a small formula
+      // floating in the middle. Measure the visible glyph run instead while
+      // retaining the complete KaTeX markup for the snapshot.
+      const rect =
+        kind === "math"
+          ? visibleMathBounds(rootNode, snapshotNode)
+          : snapshotNode.getBoundingClientRect();
+      const capturePadding = kind === "math" ? 4 : 0;
+      const captureWidth = Math.max(1, rect.width + capturePadding);
+      const captureHeight = Math.max(1, rect.height + capturePadding);
+      const displaySize = portableCopyDisplaySize(
+        kind,
+        rootNode,
+        isBlock,
+        captureWidth,
+        captureHeight
+      );
+      // Even when the renderer can expose the original vector, composite rich
+      // text needs a raster representation. Pages expands SVG attachments from
+      // RTFD into their internal XML/CSS instead of treating them as artwork.
+      // Native code snapshots this markup for the embedded representation and
+      // keeps `svg` only as an additional type when this is the sole object.
+      markup = snapshotNode.outerHTML;
+      rootNode.setAttribute("data-previewmd-copy-asset-id", id);
+      markedRoots.push(rootNode);
+      assets.push({
+        id: id,
+        kind: kind,
+        label: label,
+        width: captureWidth,
+        height: captureHeight,
+        displayWidth: displaySize.width,
+        displayHeight: displaySize.height,
+        svg: svg,
+        markup: markup,
+        isBlock: isBlock,
+      });
+    });
+    return { assets: assets, markedRoots: markedRoots };
+  }
+
+  function simplifyPortableCopyFragment(fragment, assets) {
+    const container = document.createElement("div");
+    container.appendChild(fragment);
+    const assetsByID = new Map(assets.map((asset) => [asset.id, asset]));
+
+    container
+      .querySelectorAll(
+        ".heading-anchor, .copy-code, .code-toolbar, .diagram-label, .table-expand, " +
+          ".editor-bubble-toolbar, .editor-object-source, .editor-block-inserter, " +
+          ".editor-markdown-composer, .diagram-editor, .footnote-backref"
+      )
+      .forEach((node) => node.remove());
+
+    container.querySelectorAll(".code-card").forEach((card) => {
+      const pre = card.querySelector("pre");
+      if (pre) card.replaceWith(pre);
+    });
+    container.querySelectorAll(".table-scroll").forEach((wrapper) => {
+      const table = wrapper.querySelector("table");
+      if (table) wrapper.replaceWith(table);
+    });
+    container.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => {
+      checkbox.replaceWith(document.createTextNode(checkbox.checked ? "☑ " : "☐ "));
+    });
+
+    container.querySelectorAll("[data-previewmd-copy-asset-id]").forEach((node) => {
+      const id = node.getAttribute("data-previewmd-copy-asset-id");
+      const asset = assetsByID.get(id);
+      if (!asset) {
+        node.remove();
+        return;
+      }
+      const image = document.createElement("img");
+      image.setAttribute("src", clipboardAssetURLPrefix + id);
+      image.setAttribute("alt", asset.label);
+      image.setAttribute(
+        "width",
+        String(Math.max(1, Math.round(asset.displayWidth)))
+      );
+      image.setAttribute(
+        "height",
+        String(Math.max(1, Math.round(asset.displayHeight)))
+      );
+      image.setAttribute(
+        "style",
+        asset.isBlock
+          ? "display:block;max-width:100%;height:auto;margin:9pt auto 12pt;page-break-inside:avoid;"
+          : "display:inline-block;max-width:100%;height:auto;vertical-align:-0.18em;"
+      );
+      node.replaceWith(image);
+    });
+
+    // A range can begin inside a contenteditable=false object. In that case
+    // cloneContents may omit the marked outer node. Never let a partial KaTeX
+    // or diagram implementation leak into portable HTML; keep a semantic text
+    // fallback instead.
+    container.querySelectorAll(".katex-display").forEach((node) => {
+      const source = mathSource(node);
+      node.replaceWith(document.createTextNode(source === "Formula" ? source : "$$" + source + "$$"));
+    });
+    container.querySelectorAll(".katex").forEach((node) => {
+      const source = mathSource(node);
+      node.replaceWith(document.createTextNode(source === "Formula" ? source : "$" + source + "$"));
+    });
+    container.querySelectorAll(".diagram-card, .mermaid").forEach((node) => {
+      node.replaceWith(document.createTextNode("[Diagram]"));
+    });
+
+    const allowedAttributes = {
+      A: new Set(["href", "title"]),
+      BLOCKQUOTE: new Set(["cite"]),
+      TD: new Set(["colspan", "rowspan"]),
+      TH: new Set(["colspan", "rowspan", "scope"]),
+      OL: new Set(["start"]),
+      LI: new Set(["value"]),
+      IMG: new Set(["src", "alt", "width", "height", "style"]),
+    };
+    container.querySelectorAll("*").forEach((element) => {
+      if (
+        element.tagName === "A" &&
+        /^\s*(?:javascript|vbscript|data):/i.test(element.getAttribute("href") || "")
+      ) {
+        element.removeAttribute("href");
+      }
+      const allowed = allowedAttributes[element.tagName] || new Set();
+      Array.from(element.attributes).forEach((attribute) => {
+        if (!allowed.has(attribute.name.toLowerCase())) {
+          element.removeAttribute(attribute.name);
+        }
+      });
+    });
+
+    return container;
+  }
+
+  function plainTextForPortableCopy(container) {
+    const copy = container.cloneNode(true);
+    copy.querySelectorAll("table").forEach((table) => {
+      const rows = Array.from(table.rows, (row) =>
+        Array.from(row.cells, (cell) => cell.textContent.trim()).join("\t")
+      );
+      table.replaceWith(document.createTextNode("\n" + rows.join("\n") + "\n"));
+    });
+    copy.querySelectorAll("img").forEach((image) => {
+      image.replaceWith(document.createTextNode(image.getAttribute("alt") || "Image"));
+    });
+
+    copy.style.position = "fixed";
+    copy.style.left = "-100000px";
+    copy.style.top = "0";
+    copy.style.width = "720px";
+    copy.style.whiteSpace = "pre-wrap";
+    document.body.appendChild(copy);
+    const text = copy.innerText;
+    copy.remove();
+    return text
+      .replace(/\u00a0/g, " ")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  function portableClipboardHTML(container) {
+    return (
+      '<!doctype html><html><head><meta charset="utf-8"><style>' +
+      "html,body{margin:0;padding:0;background:#fff;color:#24262d;}" +
+      "body{font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue',Arial,sans-serif;" +
+      "font-size:12.5pt;line-height:1.48;}" +
+      "p{margin:0 0 9pt;}h1,h2,h3,h4,h5,h6{margin:16pt 0 7pt;line-height:1.2;" +
+      "font-weight:700;page-break-after:avoid;}h1{font-size:24pt;}h2{font-size:19pt;}" +
+      "h3{font-size:15.5pt;}h4,h5,h6{font-size:13pt;}a{color:#3f51c6;text-decoration:underline;}" +
+      "ul,ol{margin:0 0 10pt;padding-left:24pt;}li{margin:2pt 0;}" +
+      "blockquote{margin:10pt 0;padding:7pt 11pt;border-left:3pt solid #a1a1aa;" +
+      "background:#f7f7f8;color:#4b5563;}pre{margin:10pt 0;padding:9pt;border:0.75pt solid #d4d4d8;" +
+      "background:#f7f7f8;font-family:Menlo,Monaco,monospace;font-size:10pt;white-space:pre-wrap;}" +
+      "code{font-family:Menlo,Monaco,monospace;font-size:.9em;}" +
+      "table{border-collapse:collapse;margin:10pt 0;max-width:100%;}th,td{border:0.75pt solid #c7c7cc;" +
+      "padding:5pt 7pt;text-align:left;vertical-align:top;}th{background:#f1f1f3;font-weight:650;}" +
+      "img{max-width:100%;}hr{border:0;border-top:0.75pt solid #c7c7cc;margin:14pt 0;}" +
+      "</style></head><body><!--StartFragment-->" +
+      container.innerHTML +
+      "<!--EndFragment--></body></html>"
+    );
+  }
+
+  function wholeDocumentRange() {
+    const range = document.createRange();
+    range.selectNodeContents(article);
+    return range;
+  }
+
+  function buildPortableClipboardPayload(options) {
+    const configuration = options || {};
+    const range = configuration.wholeDocument
+      ? wholeDocumentRange()
+      : rangeForPortableCopy();
+    if (!range || range.collapsed) return null;
+    const collection = collectPortableCopyAssets(range);
+    let fragment;
+    try {
+      fragment = range.cloneContents();
+    } finally {
+      collection.markedRoots.forEach((node) =>
+        node.removeAttribute("data-previewmd-copy-asset-id")
+      );
+    }
+
+    const container = simplifyPortableCopyFragment(fragment, collection.assets);
+    const referencedIDs = new Set(
+      Array.from(container.querySelectorAll("img"), (image) =>
+        (image.getAttribute("src") || "").startsWith(clipboardAssetURLPrefix)
+          ? (image.getAttribute("src") || "").slice(clipboardAssetURLPrefix.length)
+          : ""
+      ).filter(Boolean)
+    );
+    const assets = collection.assets.filter((asset) => referencedIDs.has(asset.id));
+
+    const probe = container.cloneNode(true);
+    const probeAssets = Array.from(probe.querySelectorAll("img"));
+    probeAssets.forEach((node) => node.remove());
+    const standaloneAssetID =
+      assets.length === 1 && probeAssets.length === 1 && !probe.textContent.trim()
+        ? assets[0].id
+        : null;
+
+    let markdown = "";
+    try {
+      markdown = configuration.wholeDocument && window.previewmdSerializeEditor
+        ? window.previewmdSerializeEditor()
+        : window.previewmdSerializeFragment
+          ? window.previewmdSerializeFragment(container)
+          : plainTextForPortableCopy(container);
+    } catch (_) {
+      markdown = plainTextForPortableCopy(container);
+    }
+
+    return {
+      html: portableClipboardHTML(container),
+      plainText: plainTextForPortableCopy(container),
+      markdown: markdown,
+      assets: assets,
+      standaloneAssetID: standaloneAssetID,
+      destination: configuration.destination || "automatic",
+      suggestedName: configuration.suggestedName || "PreviewMD Document.docx",
+    };
+  }
+
+  function handlePortableCopy(event) {
+    const payload = buildPortableClipboardPayload({ destination: "automatic" });
+    if (!payload) return;
+
+    let handler = null;
+    try {
+      handler =
+        window.webkit &&
+        window.webkit.messageHandlers &&
+        window.webkit.messageHandlers.copyRichText;
+    } catch (_) {}
+
+    if (event.clipboardData) {
+      event.preventDefault();
+      // In PreviewMD, native code owns the pasteboard transaction so WebKit's
+      // delayed commit cannot race the resolved RTFD assets. Keep this branch
+      // only as a portable fallback when the renderer has no native bridge.
+      if (!handler) {
+        event.clipboardData.setData("text/plain", payload.plainText);
+        if (!payload.assets.length) {
+          event.clipboardData.setData("text/html", payload.html);
+        }
+      }
+    }
+
+    try {
+      if (handler) handler.postMessage(payload);
+    } catch (_) {
+      if (event.clipboardData) {
+        event.clipboardData.setData("text/plain", payload.plainText);
+        if (!payload.assets.length) {
+          event.clipboardData.setData("text/html", payload.html);
+        }
+      }
+    }
+  }
+
+  article.addEventListener("copy", handlePortableCopy);
+  window.previewmdBuildClipboardPayload = buildPortableClipboardPayload;
+  window.previewmdAdvancedCopy = function (destination, suggestedName) {
+    const payload = buildPortableClipboardPayload({
+      destination: destination,
+      suggestedName: suggestedName,
+    });
+    if (!payload) return false;
+    try {
+      const handler =
+        window.webkit &&
+        window.webkit.messageHandlers &&
+        window.webkit.messageHandlers.copyRichText;
+      if (!handler) return false;
+      handler.postMessage(payload);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  };
+  window.previewmdExportDOCX = function (suggestedName) {
+    const payload = buildPortableClipboardPayload({
+      destination: "exportDOCX",
+      wholeDocument: true,
+      suggestedName: suggestedName,
+    });
+    if (!payload) return false;
+    try {
+      const handler =
+        window.webkit &&
+        window.webkit.messageHandlers &&
+        window.webkit.messageHandlers.copyRichText;
+      if (!handler) return false;
+      handler.postMessage(payload);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  };
+
+  let clipboardSnapshotStage = null;
+  window.previewmdFinishClipboardAssetSnapshot = function () {
+    if (clipboardSnapshotStage) clipboardSnapshotStage.remove();
+    clipboardSnapshotStage = null;
+  };
+  window.previewmdPrepareClipboardAssetSnapshot = async function (
+    markup,
+    requestedWidth,
+    requestedHeight
+  ) {
+    window.previewmdFinishClipboardAssetSnapshot();
+    const width = Math.min(
+      Math.max(1, Math.ceil(Number(requestedWidth) || 1)),
+      Math.max(1, window.innerWidth)
+    );
+    const height = Math.min(
+      Math.max(1, Math.ceil(Number(requestedHeight) || 1)),
+      Math.max(1, window.innerHeight)
+    );
+    const stage = document.createElement("div");
+    stage.setAttribute("contenteditable", "false");
+    stage.setAttribute("aria-hidden", "true");
+    stage.style.position = "fixed";
+    stage.style.left = Math.max(0, window.innerWidth - width) + "px";
+    stage.style.top = Math.max(0, window.innerHeight - height) + "px";
+    stage.style.zIndex = "2147483647";
+    stage.style.display = "flex";
+    stage.style.boxSizing = "border-box";
+    stage.style.width = width + "px";
+    stage.style.height = height + "px";
+    stage.style.alignItems = "center";
+    stage.style.justifyContent = "center";
+    stage.style.overflow = "hidden";
+    stage.style.background = "#fff";
+    stage.style.color = "#24262d";
+    stage.style.fontFamily =
+      '-apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif';
+    stage.innerHTML = markup;
+    const directImage = stage.querySelector(":scope > img");
+    if (directImage) {
+      directImage.style.display = "block";
+      directImage.style.maxWidth = "100%";
+      directImage.style.maxHeight = "100%";
+      directImage.style.objectFit = "contain";
+    }
+    document.body.appendChild(stage);
+    clipboardSnapshotStage = stage;
+
+    const images = Array.from(stage.querySelectorAll("img"));
+    images.forEach((image) => { image.loading = "eager"; });
+    const readiness = Promise.all(images.map((image) => {
+      if (image.complete) return Promise.resolve();
+      return new Promise((resolve) => {
+        image.addEventListener("load", resolve, { once: true });
+        image.addEventListener("error", resolve, { once: true });
+      });
+    }));
+    await Promise.race([
+      readiness,
+      new Promise((resolve) => setTimeout(resolve, 1200)),
+    ]);
+    await Promise.race([
+      new Promise((resolve) => requestAnimationFrame(resolve)),
+      new Promise((resolve) => setTimeout(resolve, 80)),
+    ]);
+    const rect = stage.getBoundingClientRect();
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+  };
+
   async function renderDiagrams(version, isDark) {
     if (!window.mermaid) return;
 

@@ -61,8 +61,10 @@ This is the part that requires reading multiple files together.
   Nothing is fetched over the network — this is the offline-rendering invariant.
 - All Swift→JS state travels as a single `RenderPayload` (Codable) encoded to JSON
   and pushed via `evaluateJavaScript` into `window.previewmd*` functions defined
-  in `renderer.js`. JS→Swift goes through one `WKScriptMessageHandler` named
-  `copyText` (code-block copy button → `NSPasteboard`).
+  in `renderer.js`. JS→Swift uses narrow `WKScriptMessageHandler` channels:
+  `copyText` for code-block plain text and `copyRichText` for portable
+  HTML/RTFD selections (and RTF when it is lossless), plus the
+  editor/image/split-sync channels registered in `MarkdownWebView`.
 - **Full vs incremental updates matter for performance.** The `Coordinator`
   compares payloads with `RenderPayload.requiresFullRender`: only a change to
   `markdown`, `theme`, or `systemDark` triggers a full re-render

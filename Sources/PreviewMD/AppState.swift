@@ -1034,6 +1034,21 @@ final class AppState: ObservableObject {
         }
     }
 
+    func exportDOCX() {
+        guard let currentDocument else { return }
+        rendererController.exportDOCX(
+            suggestedName: "\(currentDocument.title).docx"
+        )
+    }
+
+    func advancedCopy(_ format: AdvancedCopyFormat) {
+        guard let currentDocument else { return }
+        rendererController.advancedCopy(
+            format,
+            suggestedName: "\(currentDocument.title).docx"
+        )
+    }
+
     func printCurrent() {
         rendererController.printDocument(
             style: readingStyle,

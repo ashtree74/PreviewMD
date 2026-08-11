@@ -40,6 +40,49 @@ final class RendererController: ObservableObject {
         webView?.evaluateJavaScript("window.previewmdRedo && window.previewmdRedo();")
     }
 
+    func advancedCopy(_ format: AdvancedCopyFormat, suggestedName: String) {
+        guard let webView else {
+            NSSound.beep()
+            return
+        }
+        webView.callAsyncJavaScript(
+            "return window.previewmdAdvancedCopy && window.previewmdAdvancedCopy(destination, suggestedName);",
+            arguments: [
+                "destination": format.rawValue,
+                "suggestedName": suggestedName,
+            ],
+            in: nil,
+            in: .page
+        ) { result in
+            guard case let .success(value) = result,
+                  (value as? Bool) == true
+            else {
+                NSSound.beep()
+                return
+            }
+        }
+    }
+
+    func exportDOCX(suggestedName: String) {
+        guard let webView else {
+            NSSound.beep()
+            return
+        }
+        webView.callAsyncJavaScript(
+            "return window.previewmdExportDOCX && window.previewmdExportDOCX(suggestedName);",
+            arguments: ["suggestedName": suggestedName],
+            in: nil,
+            in: .page
+        ) { result in
+            guard case let .success(value) = result,
+                  (value as? Bool) == true
+            else {
+                NSSound.beep()
+                return
+            }
+        }
+    }
+
     func exportPDF(
         suggestedName: String,
         initialStyle: ReadingStyle,
@@ -479,6 +522,7 @@ struct MarkdownWebView: NSViewRepresentable {
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         configuration.preferences.isElementFullscreenEnabled = true
         configuration.userContentController.add(context.coordinator, name: "copyText")
+        configuration.userContentController.add(context.coordinator, name: "copyRichText")
         configuration.userContentController.add(context.coordinator, name: "editorChange")
         configuration.userContentController.add(context.coordinator, name: "pickImage")
         configuration.userContentController.add(context.coordinator, name: "splitSync")
@@ -541,6 +585,7 @@ struct MarkdownWebView: NSViewRepresentable {
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "copyText")
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "copyRichText")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "editorChange")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "pickImage")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "splitSync")
@@ -683,6 +728,38 @@ struct MarkdownWebView: NSViewRepresentable {
         private var lastPayload: RenderPayload?
         private var lastEditorMarkdown: String?
         private var lastEditorDocumentID: UUID?
+        private var richCopyGeneration = 0
+        private var richCopyAssetToken = 0
+        private var richCopyAssetTimeoutTask: Task<Void, Never>?
+        private var richCopySnapshotsAvailable = true
+        private var richCopySnapshotCount = 0
+        private var richCopyPasteboardChangeCount = 0
+
+        private struct RichCopyAsset {
+            let id: String
+            let label: String
+            let width: Double
+            let height: Double
+            let displayWidth: Double
+            let displayHeight: Double
+            let svg: String
+            let markup: String
+        }
+
+        private struct RichCopyRequest {
+            let html: String
+            let plainText: String
+            let markdown: String
+            let destination: String
+            let suggestedName: String
+            let standaloneAssetID: String?
+
+            var format: AdvancedCopyFormat? {
+                AdvancedCopyFormat(rawValue: destination)
+            }
+
+            var exportsDOCX: Bool { destination == "exportDOCX" }
+        }
 
         init(
             documentID: UUID,
@@ -816,8 +893,18 @@ struct MarkdownWebView: NSViewRepresentable {
                 switch message.name {
                 case "copyText":
                     guard let text = message.body as? String else { return }
+                    richCopyGeneration += 1
+                    richCopyAssetToken += 1
+                    richCopyAssetTimeoutTask?.cancel()
+                    richCopyAssetTimeoutTask = nil
+                    webView?.evaluateJavaScript(
+                        "window.previewmdFinishClipboardAssetSnapshot && "
+                            + "window.previewmdFinishClipboardAssetSnapshot();"
+                    )
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(text, forType: .string)
+                case "copyRichText":
+                    beginPortableRichCopy(message.body)
                 case "editorChange":
                     guard let body = message.body as? [String: Any],
                           let markdown = body["markdown"] as? String
@@ -888,6 +975,431 @@ struct MarkdownWebView: NSViewRepresentable {
 
         private static func number(_ value: Any?) -> Double? {
             (value as? NSNumber)?.doubleValue
+        }
+
+        private func beginPortableRichCopy(_ messageBody: Any) {
+            guard let body = messageBody as? [String: Any],
+                  let html = body["html"] as? String,
+                  let plainText = body["plainText"] as? String,
+                  html.utf8.count <= 20 * 1_024 * 1_024,
+                  plainText.utf8.count <= 10 * 1_024 * 1_024
+            else { return }
+
+            let request = RichCopyRequest(
+                html: html,
+                plainText: plainText,
+                markdown: String((body["markdown"] as? String ?? plainText).prefix(10 * 1_024 * 1_024)),
+                destination: body["destination"] as? String ?? "automatic",
+                suggestedName: String((body["suggestedName"] as? String ?? "PreviewMD Document.docx").prefix(256)),
+                standaloneAssetID: body["standaloneAssetID"] as? String
+            )
+            let assetDictionaries = body["assets"] as? [[String: Any]] ?? []
+            let assets = assetDictionaries.prefix(512).compactMap(Self.richCopyAsset)
+            richCopyGeneration += 1
+            let generation = richCopyGeneration
+            richCopyAssetToken += 1
+            richCopyAssetTimeoutTask?.cancel()
+            richCopyAssetTimeoutTask = nil
+            richCopySnapshotsAvailable = true
+            richCopySnapshotCount = 0
+            webView?.evaluateJavaScript(
+                "window.previewmdFinishClipboardAssetSnapshot && "
+                    + "window.previewmdFinishClipboardAssetSnapshot();"
+            )
+
+            guard !assets.isEmpty else {
+                finishPortableRichCopy(request, assets: [])
+                return
+            }
+
+            // The native bridge owns this pasteboard transaction. Publish a
+            // readable fallback immediately, then replace it only if no newer
+            // copy occurred while WebKit was resolving the embedded assets.
+            if !request.exportsDOCX {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(plainText, forType: .string)
+            }
+            richCopyPasteboardChangeCount = NSPasteboard.general.changeCount
+
+            guard let webView else { return }
+            resolvePortableCopyAssets(
+                assets,
+                at: 0,
+                resolved: [],
+                request: request,
+                generation: generation,
+                webView: webView
+            )
+        }
+
+        private static func richCopyAsset(_ dictionary: [String: Any]) -> RichCopyAsset? {
+            guard let id = dictionary["id"] as? String,
+                  id.count <= 96,
+                  id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }),
+                  let width = number(dictionary["width"]),
+                  let height = number(dictionary["height"]),
+                  let displayWidth = number(dictionary["displayWidth"]),
+                  let displayHeight = number(dictionary["displayHeight"]),
+                  width.isFinite,
+                  height.isFinite,
+                  displayWidth.isFinite,
+                  displayHeight.isFinite
+            else { return nil }
+
+            let label = String((dictionary["label"] as? String ?? "Item").prefix(4_096))
+            let svg = dictionary["svg"] as? String ?? ""
+            let markup = dictionary["markup"] as? String ?? ""
+            guard svg.utf8.count <= 10 * 1_024 * 1_024,
+                  markup.utf8.count <= 2 * 1_024 * 1_024
+            else { return nil }
+            let safeDisplayWidth = max(1, displayWidth)
+            let safeDisplayHeight = max(1, displayHeight)
+            let displayScale = min(
+                1,
+                420 / safeDisplayWidth,
+                360 / safeDisplayHeight
+            )
+            return RichCopyAsset(
+                id: id,
+                label: label,
+                width: min(2_400, max(1, width)),
+                height: min(2_400, max(1, height)),
+                displayWidth: safeDisplayWidth * displayScale,
+                displayHeight: safeDisplayHeight * displayScale,
+                svg: svg,
+                markup: markup
+            )
+        }
+
+        private func resolvePortableCopyAssets(
+            _ assets: [RichCopyAsset],
+            at index: Int,
+            resolved: [PortableRichTextClipboard.EmbeddedAsset],
+            request: RichCopyRequest,
+            generation: Int,
+            webView: WKWebView
+        ) {
+            guard generation == richCopyGeneration else { return }
+            guard request.exportsDOCX ||
+                    NSPasteboard.general.changeCount == richCopyPasteboardChangeCount
+            else {
+                richCopyAssetTimeoutTask?.cancel()
+                richCopyAssetTimeoutTask = nil
+                finishClipboardAssetSnapshot(in: webView)
+                return
+            }
+            guard index < assets.count else {
+                richCopyAssetTimeoutTask?.cancel()
+                richCopyAssetTimeoutTask = nil
+                finishClipboardAssetSnapshot(in: webView)
+                finishPortableRichCopy(request, assets: resolved)
+                return
+            }
+
+            let asset = assets[index]
+            guard !asset.markup.isEmpty else {
+                var next = resolved
+                next.append(fallbackAsset(for: asset))
+                resolvePortableCopyAssets(
+                    assets,
+                    at: index + 1,
+                    resolved: next,
+                    request: request,
+                    generation: generation,
+                    webView: webView
+                )
+                return
+            }
+
+            guard richCopySnapshotsAvailable, richCopySnapshotCount < 48 else {
+                var next = resolved
+                next.append(fallbackAsset(for: asset))
+                resolvePortableCopyAssets(
+                    assets,
+                    at: index + 1,
+                    resolved: next,
+                    request: request,
+                    generation: generation,
+                    webView: webView
+                )
+                return
+            }
+            richCopySnapshotCount += 1
+
+            richCopyAssetToken += 1
+            let assetToken = richCopyAssetToken
+            richCopyAssetTimeoutTask?.cancel()
+            richCopyAssetTimeoutTask = Task { [weak self, weak webView] in
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                guard !Task.isCancelled,
+                      let self,
+                      let webView
+                else { return }
+                self.completePortableCopyAsset(
+                    pngData: nil,
+                    asset: asset,
+                    assets: assets,
+                    index: index,
+                    resolved: resolved,
+                    request: request,
+                    generation: generation,
+                    assetToken: assetToken,
+                    webView: webView
+                )
+            }
+
+            webView.callAsyncJavaScript(
+                """
+                return await window.previewmdPrepareClipboardAssetSnapshot(
+                  markup,
+                  width,
+                  height
+                );
+                """,
+                arguments: [
+                    "markup": asset.markup,
+                    "width": asset.width,
+                    "height": asset.height,
+                ],
+                in: nil,
+                in: .page
+            ) { [weak self, weak webView] result in
+                guard let self,
+                      let webView,
+                      generation == self.richCopyGeneration,
+                      assetToken == self.richCopyAssetToken
+                else { return }
+                guard case let .success(value) = result,
+                      let frame = value as? [String: Any],
+                      let x = Self.number(frame["x"]),
+                      let y = Self.number(frame["y"]),
+                      let width = Self.number(frame["width"]),
+                      let height = Self.number(frame["height"]),
+                      width > 0,
+                      height > 0
+                else {
+                    self.completePortableCopyAsset(
+                        pngData: nil,
+                        asset: asset,
+                        assets: assets,
+                        index: index,
+                        resolved: resolved,
+                        request: request,
+                        generation: generation,
+                        assetToken: assetToken,
+                        webView: webView
+                    )
+                    return
+                }
+
+                let configuration = WKSnapshotConfiguration()
+                configuration.rect = NSRect(x: x, y: y, width: width, height: height)
+                    .intersection(webView.bounds)
+                configuration.snapshotWidth = NSNumber(
+                    value: min(4_096, max(width, width * 3))
+                )
+                webView.takeSnapshot(with: configuration) { [weak self, weak webView] image, _ in
+                    guard let self,
+                          let webView,
+                          generation == self.richCopyGeneration,
+                          assetToken == self.richCopyAssetToken
+                    else { return }
+                    self.completePortableCopyAsset(
+                        pngData: image.flatMap {
+                            Self.pngData(
+                                from: $0,
+                                logicalSize: NSSize(
+                                    width: asset.displayWidth,
+                                    height: asset.displayHeight
+                                )
+                            )
+                        },
+                        asset: asset,
+                        assets: assets,
+                        index: index,
+                        resolved: resolved,
+                        request: request,
+                        generation: generation,
+                        assetToken: assetToken,
+                        webView: webView
+                    )
+                }
+            }
+        }
+
+        private func completePortableCopyAsset(
+            pngData: Data?,
+            asset: RichCopyAsset,
+            assets: [RichCopyAsset],
+            index: Int,
+            resolved: [PortableRichTextClipboard.EmbeddedAsset],
+            request: RichCopyRequest,
+            generation: Int,
+            assetToken: Int,
+            webView: WKWebView
+        ) {
+            guard generation == richCopyGeneration,
+                  assetToken == richCopyAssetToken
+            else { return }
+            richCopyAssetToken += 1
+            richCopyAssetTimeoutTask?.cancel()
+            richCopyAssetTimeoutTask = nil
+            finishClipboardAssetSnapshot(in: webView)
+
+            var next = resolved
+            if let pngData {
+                next.append(
+                    PortableRichTextClipboard.EmbeddedAsset(
+                        id: asset.id,
+                        mimeType: "image/png",
+                        data: pngData,
+                        width: asset.displayWidth,
+                        height: asset.displayHeight,
+                        standaloneSVG: asset.svg.isEmpty ? nil : Data(asset.svg.utf8)
+                    )
+                )
+            } else {
+                // A failed or timed-out WebKit snapshot is usually systemic.
+                // Do not spend another timeout on every formula in a large
+                // selection; the remaining assets use readable PNG fallbacks.
+                richCopySnapshotsAvailable = false
+                next.append(fallbackAsset(for: asset))
+            }
+            resolvePortableCopyAssets(
+                assets,
+                at: index + 1,
+                resolved: next,
+                request: request,
+                generation: generation,
+                webView: webView
+            )
+        }
+
+        private func finishPortableRichCopy(
+            _ request: RichCopyRequest,
+            assets: [PortableRichTextClipboard.EmbeddedAsset]
+        ) {
+            do {
+                if request.exportsDOCX {
+                    try exportDOCX(request: request, assets: assets)
+                    return
+                }
+                if request.format == .docxFile {
+                    let data = try DOCXDocumentWriter.data(
+                        html: request.html,
+                        title: (request.suggestedName as NSString).deletingPathExtension,
+                        assets: assets
+                    )
+                    _ = try DOCXDocumentWriter.copyFile(
+                        data: data,
+                        suggestedName: request.suggestedName
+                    )
+                    return
+                }
+                let succeeded = PortableRichTextClipboard.write(
+                    html: request.html,
+                    plainText: request.plainText,
+                    markdown: request.markdown,
+                    assets: assets,
+                    standaloneAssetID: request.standaloneAssetID,
+                    format: request.format
+                )
+                if !succeeded { NSSound.beep() }
+            } catch {
+                presentDOCXError(error)
+            }
+        }
+
+        private func exportDOCX(
+            request: RichCopyRequest,
+            assets: [PortableRichTextClipboard.EmbeddedAsset]
+        ) throws {
+            let panel = NSSavePanel()
+            panel.title = "Export DOCX"
+            panel.prompt = "Export"
+            panel.nameFieldStringValue = request.suggestedName
+            panel.allowedContentTypes = [
+                UTType(importedAs: "org.openxmlformats.wordprocessingml.document")
+            ]
+            panel.canCreateDirectories = true
+            guard panel.runModal() == .OK, let destinationURL = panel.url else { return }
+            let data = try DOCXDocumentWriter.data(
+                html: request.html,
+                title: destinationURL.deletingPathExtension().lastPathComponent,
+                assets: assets
+            )
+            try data.write(to: destinationURL, options: .atomic)
+        }
+
+        private func presentDOCXError(_ error: any Error) {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Couldn’t create DOCX"
+            alert.informativeText = error.localizedDescription
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        }
+
+        private func finishClipboardAssetSnapshot(in webView: WKWebView) {
+            webView.evaluateJavaScript(
+                "window.previewmdFinishClipboardAssetSnapshot && "
+                    + "window.previewmdFinishClipboardAssetSnapshot();"
+            )
+        }
+
+        private static func pngData(from image: NSImage, logicalSize: NSSize) -> Data? {
+            let width = max(1, Int(logicalSize.width.rounded(.up)))
+            let height = max(1, Int(logicalSize.height.rounded(.up)))
+            guard let bitmap = NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: width,
+                pixelsHigh: height,
+                bitsPerSample: 8,
+                samplesPerPixel: 4,
+                hasAlpha: true,
+                isPlanar: false,
+                colorSpaceName: .deviceRGB,
+                bytesPerRow: 0,
+                bitsPerPixel: 0
+            ), let context = NSGraphicsContext(bitmapImageRep: bitmap)
+            else { return nil }
+
+            // Render at 3× in WebKit, then supersample into the exact logical
+            // pixel size. RTFD has no interoperable image-size metadata: Pages
+            // treats each backing pixel as a point and ignores PNG density.
+            // Downsampling here keeps text and lines clean without changing
+            // their physical size in the destination.
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = context
+            context.imageInterpolation = .high
+            image.draw(
+                in: NSRect(x: 0, y: 0, width: width, height: height),
+                from: NSRect(origin: .zero, size: image.size),
+                operation: .copy,
+                fraction: 1
+            )
+            NSGraphicsContext.restoreGraphicsState()
+            bitmap.size = NSSize(width: width, height: height)
+            return bitmap.representation(using: .png, properties: [:])
+        }
+
+        private func fallbackAsset(
+            for asset: RichCopyAsset
+        ) -> PortableRichTextClipboard.EmbeddedAsset {
+            let fallback = PortableRichTextClipboard.fallbackAsset(
+                id: asset.id,
+                label: asset.label,
+                width: asset.displayWidth,
+                height: asset.displayHeight
+            )
+            return PortableRichTextClipboard.EmbeddedAsset(
+                id: fallback.id,
+                mimeType: fallback.mimeType,
+                data: fallback.data,
+                width: fallback.width,
+                height: fallback.height,
+                standaloneSVG: asset.svg.isEmpty ? nil : Data(asset.svg.utf8)
+            )
         }
 
         private func presentImagePicker(in webView: WKWebView) {

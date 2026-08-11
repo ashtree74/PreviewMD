@@ -210,6 +210,11 @@ struct PreviewMDCommands: Commands {
             }
             .keyboardShortcut("e", modifiers: [.command, .shift])
             .disabled(state.currentDocument == nil || state.displayMode == .source)
+
+            Button("Export as DOCX…") {
+                state.exportDOCX()
+            }
+            .disabled(state.currentDocument == nil || state.displayMode == .source)
         }
 
         CommandGroup(replacing: .undoRedo) {
@@ -245,6 +250,39 @@ struct PreviewMDCommands: Commands {
         // Find belongs in Edit by macOS convention, not in View next to the
         // display options.
         CommandGroup(after: .textEditing) {
+            Menu("Advanced Copy") {
+                Button(AdvancedCopyFormat.pages.title) {
+                    state.advancedCopy(.pages)
+                }
+                Button(AdvancedCopyFormat.word.title) {
+                    state.advancedCopy(.word)
+                }
+                Button(AdvancedCopyFormat.semanticHTML.title) {
+                    state.advancedCopy(.semanticHTML)
+                }
+
+                Divider()
+
+                Button(AdvancedCopyFormat.markdown.title) {
+                    state.advancedCopy(.markdown)
+                }
+                Button(AdvancedCopyFormat.plainText.title) {
+                    state.advancedCopy(.plainText)
+                }
+
+                Divider()
+
+                Button(AdvancedCopyFormat.docxFile.title) {
+                    state.advancedCopy(.docxFile)
+                }
+                Button(AdvancedCopyFormat.image.title) {
+                    state.advancedCopy(.image)
+                }
+            }
+            .disabled(state.currentDocument == nil || state.displayMode == .source)
+
+            Divider()
+
             Button("Find…") {
                 state.searchFieldFocusToken = UUID()
             }

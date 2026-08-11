@@ -127,6 +127,399 @@ final class EditorWebViewTests: XCTestCase, WKNavigationDelegate {
         }
     }
 
+    func testPortableClipboardPayloadReplacesRendererInternalsWithSemanticContent() async throws {
+        let markdown = """
+        # Portable selection
+
+        Inline formula: $E = mc^2$.
+
+        | Column A | Column B |
+        | --- | --- |
+        | Alpha | Beta |
+
+        $$\\int_{-\\infty}^{\\infty} e^{-x^2} dx = \\sqrt{\\pi}$$
+
+        ```mermaid
+        flowchart LR
+          A[Start] --> B[Finish]
+        ```
+
+        """
+        let webView = try await makeEditor(markdown: markdown)
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const article = document.querySelector("#preview-document");
+            const range = document.createRange();
+            range.selectNodeContents(article);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            return window.previewmdBuildClipboardPayload();
+            """,
+            contentWorld: .page
+        )
+        let payload = try XCTUnwrap(result as? [String: Any])
+        let html = try XCTUnwrap(payload["html"] as? String)
+        let plainText = try XCTUnwrap(payload["plainText"] as? String)
+        let assets = try XCTUnwrap(payload["assets"] as? [[String: Any]])
+
+        XCTAssertTrue(html.contains("<table>"))
+        XCTAssertTrue(html.contains("previewmd-copy-asset:"))
+        XCTAssertFalse(html.contains("table-scroll"))
+        XCTAssertFalse(html.contains("katex-html"))
+        XCTAssertFalse(html.contains("class=\"mermaid"))
+        XCTAssertFalse(html.contains("copy-code"))
+        XCTAssertTrue(plainText.contains("$E = mc^2$"))
+        XCTAssertTrue(plainText.contains("Column A\tColumn B"))
+        XCTAssertTrue(plainText.contains("Alpha\tBeta"))
+
+        XCTAssertEqual(assets.count, 3)
+        XCTAssertEqual(
+            assets.compactMap { $0["kind"] as? String }.sorted(),
+            ["diagram", "math", "math"]
+        )
+        let diagram = try XCTUnwrap(
+            assets.first(where: { $0["kind"] as? String == "diagram" })
+        )
+        XCTAssertTrue((diagram["svg"] as? String)?.contains("<svg") == true)
+        XCTAssertTrue((diagram["markup"] as? String)?.contains("<svg") == true)
+        XCTAssertTrue(
+            assets
+                .filter { $0["kind"] as? String == "math" }
+                .allSatisfy { ($0["markup"] as? String)?.contains("katex") == true }
+        )
+        XCTAssertNil(payload["standaloneAssetID"] as? String)
+    }
+
+    func testPortableClipboardPreservesSemanticHeadingLevels() async throws {
+        let markdown = """
+        # Level 1
+
+        ## Level 2
+
+        ### Level 3
+
+        #### Level 4
+
+        ##### Level 5
+
+        ###### Level 6
+
+        """
+        let webView = try await makeEditor(markdown: markdown)
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const article = document.querySelector("#preview-document");
+            const range = document.createRange();
+            range.selectNodeContents(article);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            return window.previewmdBuildClipboardPayload().html;
+            """,
+            contentWorld: .page
+        )
+        let html = try XCTUnwrap(result as? String)
+
+        for level in 1...6 {
+            XCTAssertTrue(html.contains("<h\(level)>Level \(level)</h\(level)>"))
+        }
+        XCTAssertFalse(html.contains("role=\"presentation\""))
+    }
+
+    func testAdvancedCopyPayloadCarriesDestinationAndMarkdownSource() async throws {
+        let markdown = """
+        # Document title
+
+        Body with **strong text**.
+
+        - First
+        - Second
+
+        """
+        let webView = try await makeEditor(markdown: markdown)
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const article = document.querySelector("#preview-document");
+            const range = document.createRange();
+            range.selectNodeContents(article);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            return window.previewmdBuildClipboardPayload({
+              destination: "docxFile",
+              suggestedName: "Example.docx",
+            });
+            """,
+            contentWorld: .page
+        )
+        let payload = try XCTUnwrap(result as? [String: Any])
+
+        XCTAssertEqual(payload["destination"] as? String, "docxFile")
+        XCTAssertEqual(payload["suggestedName"] as? String, "Example.docx")
+        let source = try XCTUnwrap(payload["markdown"] as? String)
+        XCTAssertTrue(source.contains("# Document title"))
+        XCTAssertTrue(source.contains("**strong text**"))
+        XCTAssertTrue(source.contains("- First"))
+    }
+
+    func testDOCXExportPayloadUsesWholeDocumentWithoutASelection() async throws {
+        let webView = try await makeEditor(markdown: "# Whole document\n\nBody\n")
+        let result = try await webView.callAsyncJavaScript(
+            """
+            window.getSelection().removeAllRanges();
+            return window.previewmdBuildClipboardPayload({
+              destination: "exportDOCX",
+              wholeDocument: true,
+              suggestedName: "Whole.docx",
+            });
+            """,
+            contentWorld: .page
+        )
+        let payload = try XCTUnwrap(result as? [String: Any])
+
+        XCTAssertEqual(payload["destination"] as? String, "exportDOCX")
+        XCTAssertEqual(payload["suggestedName"] as? String, "Whole.docx")
+        XCTAssertEqual(payload["markdown"] as? String, "# Whole document\n\nBody\n")
+        XCTAssertTrue(try XCTUnwrap(payload["html"] as? String).contains("<h1>Whole document</h1>"))
+    }
+
+    func testPortableClipboardPayloadSupportsSelectedVisualObject() async throws {
+        let webView = try await makeEditor(markdown: "$$E = mc^2$$\n")
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const formula = document.querySelector(".katex-display");
+            formula.classList.add("editor-selected-object");
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            return window.previewmdBuildClipboardPayload();
+            """,
+            contentWorld: .page
+        )
+        let payload = try XCTUnwrap(result as? [String: Any])
+        let assets = try XCTUnwrap(payload["assets"] as? [[String: Any]])
+
+        XCTAssertEqual(assets.count, 1)
+        XCTAssertEqual(payload["standaloneAssetID"] as? String, assets[0]["id"] as? String)
+        XCTAssertEqual(payload["plainText"] as? String, "$$E = mc^2$$")
+    }
+
+    func testPortableClipboardFitsLargePhotosAndDiagramsIntoDocumentMediaBoxes() async throws {
+        let webView = try await makeEditor(markdown: "# Media\n")
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const article = document.querySelector("#preview-document");
+            const photo = document.createElement("img");
+            photo.alt = "Large photo";
+            photo.src = "data:image/png;base64," +
+              "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQI" +
+              "HWP4z8DwHwAFgAI/ScL5WQAAAABJRU5ErkJggg==";
+            photo.style.cssText =
+              "display:block;width:800px;height:600px;max-width:none;";
+            article.appendChild(photo);
+
+            const card = document.createElement("div");
+            card.className = "diagram-card";
+            card.innerHTML = `
+              <div class="mermaid rendered">
+                <svg xmlns="http://www.w3.org/2000/svg"
+                  style="display:block;width:800px;height:400px;max-width:none"
+                  viewBox="0 0 800 400">
+                  <rect width="800" height="400" fill="white"/>
+                </svg>
+              </div>`;
+            article.appendChild(card);
+
+            const range = document.createRange();
+            range.selectNodeContents(article);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            return window.previewmdBuildClipboardPayload();
+            """,
+            contentWorld: .page
+        )
+        let payload = try XCTUnwrap(result as? [String: Any])
+        let assets = try XCTUnwrap(payload["assets"] as? [[String: Any]])
+        let photo = try XCTUnwrap(assets.first(where: { $0["kind"] as? String == "image" }))
+        let diagram = try XCTUnwrap(
+            assets.first(where: { $0["kind"] as? String == "diagram" })
+        )
+
+        XCTAssertEqual(
+            try XCTUnwrap((photo["width"] as? NSNumber)?.doubleValue),
+            800,
+            accuracy: 0.5
+        )
+        XCTAssertEqual(
+            try XCTUnwrap((photo["height"] as? NSNumber)?.doubleValue),
+            600,
+            accuracy: 0.5
+        )
+        XCTAssertEqual(
+            try XCTUnwrap((photo["displayWidth"] as? NSNumber)?.doubleValue),
+            360,
+            accuracy: 0.5
+        )
+        XCTAssertEqual(
+            try XCTUnwrap((photo["displayHeight"] as? NSNumber)?.doubleValue),
+            270,
+            accuracy: 0.5
+        )
+        XCTAssertEqual(
+            try XCTUnwrap((diagram["displayWidth"] as? NSNumber)?.doubleValue),
+            420,
+            accuracy: 0.5
+        )
+        XCTAssertLessThanOrEqual(
+            try XCTUnwrap((diagram["displayHeight"] as? NSNumber)?.doubleValue),
+            320
+        )
+
+        let html = try XCTUnwrap(payload["html"] as? String)
+        XCTAssertTrue(html.contains("width=\"360\" height=\"270\""))
+        XCTAssertTrue(html.contains("width=\"420\""))
+    }
+
+    func testImmediateFormulaCopyUsesReadableTextUntilAssetsAreEmbedded() async throws {
+        let webView = try await makeEditor(markdown: "Formula: $E = mc^2$.\n")
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const paragraph = document.querySelector("#preview-document p");
+            const range = document.createRange();
+            range.selectNodeContents(paragraph);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            const written = {};
+            const event = new Event("copy", { bubbles: true, cancelable: true });
+            Object.defineProperty(event, "clipboardData", {
+              value: { setData(type, value) { written[type] = value; } },
+            });
+            paragraph.dispatchEvent(event);
+            return written;
+            """,
+            contentWorld: .page
+        )
+        let written = try XCTUnwrap(result as? [String: Any])
+
+        XCTAssertEqual(written["text/plain"] as? String, "Formula: $E = mc^2$.")
+        XCTAssertNil(written["text/html"])
+    }
+
+    func testPartialFormulaSelectionExpandsToPortableAtomicAsset() async throws {
+        let webView = try await makeEditor(markdown: "Before $E = mc^2$ after.\n")
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const formula = document.querySelector(".katex");
+            const walker = document.createTreeWalker(
+              formula.querySelector(".katex-html"),
+              NodeFilter.SHOW_TEXT
+            );
+            let text = null;
+            while (walker.nextNode()) {
+              if (walker.currentNode.nodeValue.length) {
+                text = walker.currentNode;
+                break;
+              }
+            }
+            const range = document.createRange();
+            range.setStart(text, 0);
+            range.setEnd(text, Math.min(1, text.nodeValue.length));
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            return window.previewmdBuildClipboardPayload();
+            """,
+            contentWorld: .page
+        )
+        let payload = try XCTUnwrap(result as? [String: Any])
+        let assets = try XCTUnwrap(payload["assets"] as? [[String: Any]])
+
+        XCTAssertEqual(assets.count, 1)
+        XCTAssertEqual(payload["plainText"] as? String, "$E = mc^2$")
+        XCTAssertFalse(try XCTUnwrap(payload["html"] as? String).contains("katex-html"))
+    }
+
+    func testPortableClipboardDropsExecutableLinkSchemes() async throws {
+        let webView = try await makeEditor(markdown: "[Example](https://example.com)\n")
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const anchor = document.querySelector("#preview-document a");
+            anchor.setAttribute("href", "javascript:alert(1)");
+            const range = document.createRange();
+            range.selectNode(anchor);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            return window.previewmdBuildClipboardPayload().html;
+            """,
+            contentWorld: .page
+        )
+        let html = try XCTUnwrap(result as? String)
+
+        XCTAssertTrue(html.contains("Example"))
+        XCTAssertFalse(html.localizedCaseInsensitiveContains("javascript:"))
+    }
+
+    func testClipboardAssetSnapshotStageContainsRenderedFormula() async throws {
+        let webView = try await makeEditor(markdown: "$$E = mc^2$$\n")
+        let result = try await webView.callAsyncJavaScript(
+            """
+            const formula = document.querySelector(".katex-display");
+            const range = document.createRange();
+            range.selectNode(formula);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            return window.previewmdBuildClipboardPayload().assets[0];
+            """,
+            contentWorld: .page
+        )
+        let asset = try XCTUnwrap(result as? [String: Any])
+        let markup = try XCTUnwrap(asset["markup"] as? String)
+        let width = try XCTUnwrap((asset["width"] as? NSNumber)?.doubleValue)
+        let height = try XCTUnwrap((asset["height"] as? NSNumber)?.doubleValue)
+        let displayWidth = try XCTUnwrap(
+            (asset["displayWidth"] as? NSNumber)?.doubleValue
+        )
+        let frameResult = try await webView.callAsyncJavaScript(
+            """
+            const frame = await window.previewmdPrepareClipboardAssetSnapshot(
+              markup,
+              width,
+              height
+            );
+            const stage = document.querySelector('[aria-hidden="true"][contenteditable="false"]:has(.katex)');
+            return {
+              frame: frame,
+              hasFormula: Boolean(stage && stage.querySelector(".katex-html")),
+              background: stage ? getComputedStyle(stage).backgroundColor : "",
+            };
+            """,
+            arguments: ["markup": markup, "width": width, "height": height],
+            contentWorld: .page
+        )
+        let output = try XCTUnwrap(frameResult as? [String: Any])
+        let frame = try XCTUnwrap(output["frame"] as? [String: Any])
+        _ = try await webView.evaluateJavaScript(
+            "window.previewmdFinishClipboardAssetSnapshot();"
+        )
+
+        XCTAssertEqual(output["hasFormula"] as? Bool, true)
+        XCTAssertEqual(output["background"] as? String, "rgb(255, 255, 255)")
+        XCTAssertLessThan(width, 300, "A short formula should not use the whole text column")
+        XCTAssertEqual(displayWidth, width, accuracy: 0.5)
+        XCTAssertGreaterThanOrEqual(
+            try XCTUnwrap((frame["width"] as? NSNumber)?.doubleValue),
+            width.rounded(.down)
+        )
+        XCTAssertGreaterThanOrEqual(
+            try XCTUnwrap((frame["height"] as? NSNumber)?.doubleValue),
+            height.rounded(.down)
+        )
+    }
+
     func testRichSelectionSerializesAsBoldMarkdown() async throws {
         let webView = try await makeEditor(markdown: "Hello world.\n")
 
