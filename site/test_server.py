@@ -29,6 +29,18 @@ class PreviewMDLandingContentTests(unittest.TestCase):
         self.assertNotIn("reader, not editor", normalized)
         self.assertNotIn("new in previewmd", normalized)
 
+    def test_portable_copy_and_semantic_docx_are_presented(self) -> None:
+        html = (self.site_dir / "index.html").read_text(encoding="utf-8")
+        normalized = html.lower()
+
+        self.assertIn("take the document with you", normalized)
+        self.assertIn("advanced copy", normalized)
+        self.assertIn("pages or word", normalized)
+        self.assertIn("export a semantic docx", normalized)
+        self.assertIn("headings as heading styles", normalized)
+        self.assertIn("tables as real editable tables", normalized)
+        self.assertIn("copy a supported visual object on its own as svg", normalized)
+
     def test_release_archive_is_consistent_in_html_and_javascript(self) -> None:
         html = (self.site_dir / "index.html").read_text(encoding="utf-8")
         javascript = (self.site_dir / "main.js").read_text(encoding="utf-8")
