@@ -869,7 +869,7 @@ h1, h2, h3, p, ul, pre, figure { margin: 0; }
    ============================================================ */
 .specimens {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 22px;
   margin-top: 36px;
 }
@@ -944,6 +944,33 @@ h1, h2, h3, p, ul, pre, figure { margin: 0; }
   --p-size: 14.5px;
   --p-leading: 1.68;
 }
+.spec-custom {
+  --p-page: #f7f2ff;
+  --p-ink: #252038;
+  --p-muted: #615878;
+  --p-link: #7957d5;
+  --p-display: "Avenir Next", Avenir, -apple-system, BlinkMacSystemFont, sans-serif;
+  --p-body: "Iowan Old Style", Palatino, Georgia, ui-serif, serif;
+  --p-size: 15px;
+  --p-leading: 1.72;
+}
+
+.preset-swatches {
+  display: flex;
+  gap: 5px;
+  margin-bottom: 18px;
+}
+.preset-swatches span {
+  width: 16px;
+  height: 16px;
+  border: 1px solid color-mix(in srgb, var(--p-ink) 14%, transparent);
+  border-radius: 50%;
+  background: var(--p-page);
+}
+.preset-swatches span:nth-child(2) { background: var(--p-ink); }
+.preset-swatches span:nth-child(3) { background: var(--p-muted); }
+.preset-swatches span:nth-child(4) { background: var(--p-link); }
+.preset-swatches span:nth-child(5) { background: #e0c9ff; }
 
 @media (prefers-color-scheme: dark) {
   .spec-page { border-color: var(--edge); box-shadow: none; }
@@ -964,6 +991,12 @@ h1, h2, h3, p, ul, pre, figure { margin: 0; }
     --p-ink: #f0efec;
     --p-muted: #b8b8b5;
     --p-link: #f09a84;
+  }
+  .spec-custom {
+    --p-page: #211d2c;
+    --p-ink: #f0eafb;
+    --p-muted: #c7bdd8;
+    --p-link: #c3a6ff;
   }
 }
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import plistlib
 import re
 import sqlite3
 import threading
@@ -16,7 +17,7 @@ import server as landing
 
 class PreviewMDLandingContentTests(unittest.TestCase):
     analytics_id = "G-8YXDM1JJH2"
-    release_archive = "PreviewMD-1.6-10-macOS.dmg"
+    release_archive = "PreviewMD-1.7-11-macOS.dmg"
     site_dir = Path(__file__).resolve().parent
 
     def test_editing_is_presented_as_a_core_capability(self) -> None:
@@ -41,9 +42,25 @@ class PreviewMDLandingContentTests(unittest.TestCase):
         self.assertIn("tables as real editable tables", normalized)
         self.assertIn("copy a supported visual object on its own as svg", normalized)
 
+    def test_custom_visual_presets_are_presented_with_reading_styles(self) -> None:
+        html = (self.site_dir / "index.html").read_text(encoding="utf-8")
+        stylesheet = (self.site_dir / "styles.css").read_text(encoding="utf-8")
+        normalized = html.lower()
+
+        self.assertIn("set the page your way", normalized)
+        self.assertIn("save your own named visual presets", normalized)
+        self.assertIn("named visual presets", normalized)
+        self.assertIn("body and heading fonts", normalized)
+        self.assertIn("styles.css?v=db-7", html)
+        self.assertIn(".spec-custom", stylesheet)
+        self.assertIn(".preset-swatches", stylesheet)
+
     def test_release_archive_is_consistent_in_html_and_javascript(self) -> None:
         html = (self.site_dir / "index.html").read_text(encoding="utf-8")
         javascript = (self.site_dir / "main.js").read_text(encoding="utf-8")
+        app_info = plistlib.loads(
+            (self.site_dir.parent / "scripts" / "Info.plist").read_bytes()
+        )
         release_links = set(
             re.findall(r'href="(PreviewMD-[^"]+-macOS\.dmg)"', html)
         )
@@ -54,10 +71,12 @@ class PreviewMDLandingContentTests(unittest.TestCase):
             f'const DOWNLOAD_FILE = "{self.release_archive}";',
             javascript,
         )
-        self.assertNotIn("PreviewMD-1.6-8-macOS.dmg", html)
-        self.assertNotIn("PreviewMD-1.6-8-macOS.dmg", javascript)
-        self.assertNotIn("PreviewMD-1.6-9-macOS.dmg", html)
-        self.assertNotIn("PreviewMD-1.6-9-macOS.dmg", javascript)
+        self.assertEqual(app_info["CFBundleShortVersionString"], "1.7")
+        self.assertEqual(app_info["CFBundleVersion"], "11")
+        self.assertIn("v1.7 (build 11)", html)
+        self.assertIn('main.js?v=db-11', html)
+        self.assertNotIn("PreviewMD-1.6-10-macOS.dmg", html)
+        self.assertNotIn("PreviewMD-1.6-10-macOS.dmg", javascript)
         self.assertNotIn("PreviewMD-1.5-7-macOS.zip", html)
         self.assertNotIn("PreviewMD-1.5-7-macOS.zip", javascript)
 
@@ -98,7 +117,7 @@ class QuietRequestHandler(landing.PreviewMDRequestHandler):
 
 
 class PreviewMDServerTests(unittest.TestCase):
-    archive_name = "PreviewMD-1.6-10-macOS.dmg"
+    archive_name = "PreviewMD-1.7-11-macOS.dmg"
 
     def setUp(self) -> None:
         self.temporary_directory = TemporaryDirectory()
@@ -178,9 +197,9 @@ class PreviewMDServerTests(unittest.TestCase):
         for file_name in (
             "PreviewMD-missing-macOS.dmg",
             "PreviewMD-missing-macOS.zip",
-            "../PreviewMD-1.6-10-macOS.dmg",
-            "../PreviewMD-1.6-10-macOS.zip",
-            "PreviewMD-1.6-10-macOS.pkg",
+            "../PreviewMD-1.7-11-macOS.dmg",
+            "../PreviewMD-1.7-11-macOS.zip",
+            "PreviewMD-1.7-11-macOS.pkg",
             "not-previewmd.zip",
         ):
             status, payload = self.post_json(
