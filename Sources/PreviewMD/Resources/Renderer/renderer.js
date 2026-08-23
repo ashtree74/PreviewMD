@@ -437,9 +437,24 @@
     button.innerHTML = expanded ? tableCollapseIcon : tableExpandIcon;
   }
 
-  window.addEventListener("resize", function () {
-    enhanceTables();
-  });
+  // #preview-document animates width changes (`transition: width 180ms`), so
+  // measuring the article immediately after a layout change reads the
+  // pre-animation width and tables settle for the previous column size.
+  // Debounce the relayout past the transition; successive width changes
+  // (slider drags, window resizes) re-arm the timer and measure once, at the
+  // final width. Also correct when transitions are disabled: the timer still
+  // runs.
+  let tableRelayoutTimer = 0;
+
+  function scheduleTableRelayout() {
+    window.clearTimeout(tableRelayoutTimer);
+    tableRelayoutTimer = window.setTimeout(function () {
+      tableRelayoutTimer = 0;
+      enhanceTables();
+    }, 240);
+  }
+
+  window.addEventListener("resize", scheduleTableRelayout);
 
   function articleContentWidth() {
     const style = window.getComputedStyle(article);
@@ -1422,7 +1437,7 @@
     root.dataset.width = fluidWidth ? "fluid" : "fixed";
     root.style.setProperty("--reading-width", readingWidth + "px");
     root.style.setProperty("--top-inset", (topInset || 0) + "px");
-    window.requestAnimationFrame(enhanceTables);
+    scheduleTableRelayout();
   };
 
   window.previewmdRender = async function (options) {
