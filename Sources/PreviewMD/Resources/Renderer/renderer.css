@@ -627,6 +627,10 @@ code {
 
 .table-scroll.is-wide .table-sizer {
   margin-left: var(--table-leading-gutter, 0px);
+  /* The margin shifts the card right without shrinking it; subtract the
+     gutter so the card ends at the surface edge instead of overflowing the
+     viewport (hidden by overlay scrollbars on macOS, visible on Windows). */
+  width: calc(100% - var(--table-leading-gutter, 0px));
 }
 
 .table-scroll.is-wide > .table-expand,
