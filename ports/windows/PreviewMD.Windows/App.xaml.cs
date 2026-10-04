@@ -13,6 +13,7 @@ public partial class App : Application
     public App()
     {
         ShellIntegration.SetProcessId();
+        ShellIntegration.EnsureStartMenuShortcut();
         InitializeComponent();
     }
 
@@ -30,6 +31,7 @@ public partial class App : Application
         var window = new MainWindow();
         _window = window;
         instance.Activated += OnInstanceActivated;
+        ShellIntegration.AssignWindowIdentity(WinRT.Interop.WindowNative.GetWindowHandle(window));
         window.Activate();
         window.HandleCommandLine(Environment.GetCommandLineArgs().Skip(1).ToArray());
     }

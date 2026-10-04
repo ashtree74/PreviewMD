@@ -4,6 +4,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
+using Microsoft.UI.Dispatching;
 using PreviewMD.Windows.Core;
 using Windows.UI.StartScreen;
 
@@ -19,15 +20,18 @@ static class ShellIntegration
     static IntPtr _previousProc;
     static WNDPROC? _windowProc;
     static Action<string>? _openMarkdown;
+    static DispatcherQueue? _dropQueue;
+    static MarkdownDropTarget? _dropTarget;
 
     public static void SetProcessId()
     {
         SetCurrentProcessExplicitAppUserModelID(AppUserModelId);
     }
 
-    public static void AttachWindow(IntPtr hwnd, Action<string> openMarkdown)
+    public static void AttachWindow(IntPtr hwnd, Action<string> openMarkdown, DispatcherQueue queue)
     {
         _openMarkdown = openMarkdown;
+        _dropQueue = queue;
         SetWindowAppUserModelId(hwnd);
         _windowProc ??= WindowProc;
         var current = GetWindowLongPtr(hwnd, GWLP_WNDPROC);
@@ -39,6 +43,51 @@ static class ShellIntegration
         }
 
         DragAcceptFiles(hwnd, true);
+        RegisterFileDrop(hwnd);
+        EnumChildWindows(hwnd, (child, _) =>
+        {
+            RegisterFileDrop(child);
+            return true;
+        }, IntPtr.Zero);
+    }
+
+    public static void EnsureStartMenuShortcut()
+    {
+        var exe = Environment.ProcessPath;
+        if (string.IsNullOrEmpty(exe))
+            return;
+
+        var programs = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "Microsoft", "Windows", "Start Menu", "Programs");
+        Directory.CreateDirectory(programs);
+        var link = Path.Combine(programs, "PreviewMD (Windows experiment).lnk");
+        var shellType = Type.GetTypeFromProgID("WScript.Shell");
+        if (shellType is null)
+            return;
+
+        dynamic shell = Activator.CreateInstance(shellType)!;
+        dynamic shortcut = shell.CreateShortcut(link);
+        shortcut.TargetPath = exe;
+        shortcut.WorkingDirectory = Path.GetDirectoryName(exe);
+        shortcut.Description = "PreviewMD (Windows experiment)";
+        shortcut.Save();
+
+        var iid = new Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
+        if (SHGetPropertyStoreFromParsingName(link, IntPtr.Zero, 2, ref iid, out var store) != 0 || store is null)
+            return;
+
+        var key = AppUserModelIdKey();
+        var value = PropVariant.FromString(AppUserModelId);
+        try
+        {
+            store.SetValue(ref key, ref value);
+            store.Commit();
+        }
+        finally
+        {
+            value.Clear();
+        }
     }
 
     static IntPtr WindowProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
@@ -89,6 +138,8 @@ static class ShellIntegration
         return paths;
     }
 
+    public static void AssignWindowIdentity(IntPtr hwnd) => SetWindowAppUserModelId(hwnd);
+
     static void SetWindowAppUserModelId(IntPtr hwnd)
     {
         var iid = new Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
@@ -96,7 +147,7 @@ static class ShellIntegration
         if (result != 0 || store is null)
             return;
 
-        var key = new PropertyKey(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 5);
+        var key = AppUserModelIdKey();
         var value = PropVariant.FromString(AppUserModelId);
         try
         {
@@ -109,8 +160,61 @@ static class ShellIntegration
         }
     }
 
+    static PropertyKey AppUserModelIdKey() => new(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 5);
+
+    static void RegisterFileDrop(IntPtr hwnd)
+    {
+        OleInitialize(IntPtr.Zero);
+        _dropTarget ??= new MarkdownDropTarget();
+        var result = RegisterDragDrop(hwnd, _dropTarget);
+        if (result == unchecked((int)0x80040101))
+        {
+            RevokeDragDrop(hwnd);
+            RegisterDragDrop(hwnd, _dropTarget);
+        }
+    }
+
+    static void OpenDroppedPaths(IReadOnlyList<string> paths)
+    {
+        var markdown = RecentDocuments.FirstMarkdown(paths);
+        if (markdown is null || _openMarkdown is null)
+            return;
+        if (_dropQueue is null)
+        {
+            _openMarkdown(markdown);
+            return;
+        }
+
+        _dropQueue.TryEnqueue(() => _openMarkdown(markdown));
+    }
+
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    static extern int SHGetPropertyStoreFromParsingName(
+        string path,
+        IntPtr bindContext,
+        uint flags,
+        ref Guid riid,
+        [MarshalAs(UnmanagedType.Interface)] out IPropertyStore propertyStore);
+
+    [DllImport("ole32.dll")]
+    static extern int OleInitialize(IntPtr reserved);
+
+    [DllImport("ole32.dll")]
+    static extern int RegisterDragDrop(IntPtr hwnd, IDropTarget dropTarget);
+
+    [DllImport("ole32.dll")]
+    static extern int RevokeDragDrop(IntPtr hwnd);
+
+    [DllImport("ole32.dll")]
+    static extern void ReleaseStgMedium(ref STGMEDIUM medium);
+
+    [DllImport("user32.dll")]
+    static extern bool EnumChildWindows(IntPtr parent, EnumWindowsProc callback, IntPtr data);
+
+    delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr data);
 
     [DllImport("shell32.dll")]
     static extern int SHGetPropertyStoreForWindow(
@@ -184,6 +288,105 @@ static class ShellIntegration
                 Marshal.FreeCoTaskMem(Pointer);
             Pointer = IntPtr.Zero;
             VariantType = 0;
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct POINTL
+    {
+        public int X;
+        public int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct FORMATETC
+    {
+        public ushort Format;
+        public IntPtr TargetDevice;
+        public uint Aspect;
+        public int Index;
+        public uint Medium;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct STGMEDIUM
+    {
+        public uint Medium;
+        public IntPtr Data;
+        public IntPtr UnknownForRelease;
+    }
+
+    [ComImport]
+    [Guid("0000010e-0000-0000-C000-000000000046")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IDataObject
+    {
+        [PreserveSig]
+        int GetData(ref FORMATETC format, out STGMEDIUM medium);
+    }
+
+    [ComImport]
+    [Guid("00000122-0000-0000-C000-000000000046")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IDropTarget
+    {
+        [PreserveSig]
+        int DragEnter(IntPtr data, uint keyState, POINTL point, ref uint effect);
+        [PreserveSig]
+        int DragOver(uint keyState, POINTL point, ref uint effect);
+        [PreserveSig]
+        int DragLeave();
+        [PreserveSig]
+        int Drop(IntPtr data, uint keyState, POINTL point, ref uint effect);
+    }
+
+    [ComVisible(true)]
+    sealed class MarkdownDropTarget : IDropTarget
+    {
+        const uint CopyEffect = 1;
+
+        public int DragEnter(IntPtr data, uint keyState, POINTL point, ref uint effect)
+        {
+            effect = CopyEffect;
+            return 0;
+        }
+
+        public int DragOver(uint keyState, POINTL point, ref uint effect)
+        {
+            effect = CopyEffect;
+            return 0;
+        }
+
+        public int DragLeave() => 0;
+
+        public int Drop(IntPtr data, uint keyState, POINTL point, ref uint effect)
+        {
+            effect = CopyEffect;
+            if (data == IntPtr.Zero)
+                return 0;
+
+            var source = (IDataObject)Marshal.GetObjectForIUnknown(data);
+            var format = new FORMATETC
+            {
+                Format = 15,
+                Aspect = 1,
+                Index = -1,
+                Medium = 1,
+            };
+            var result = source.GetData(ref format, out var medium);
+            if (result != 0)
+                return result;
+
+            try
+            {
+                OpenDroppedPaths(ReadDroppedFiles(medium.Data));
+            }
+            finally
+            {
+                ReleaseStgMedium(ref medium);
+            }
+
+            return 0;
         }
     }
 }

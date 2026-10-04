@@ -59,7 +59,7 @@ public sealed partial class MainWindow : Window, IDocumentRenderer
             return;
         _shellAttached = true;
         var hwnd = WindowNative.GetWindowHandle(this);
-        ShellIntegration.AttachWindow(hwnd, path => _ = OpenPathAsync(path));
+        ShellIntegration.AttachWindow(hwnd, path => _ = OpenPathAsync(path), DispatcherQueue);
     }
 
     public bool SystemDark => (Content as FrameworkElement)?.ActualTheme == ElementTheme.Dark;
@@ -126,7 +126,8 @@ public sealed partial class MainWindow : Window, IDocumentRenderer
         _rendererReady = true;
         ShellIntegration.AttachWindow(
             WindowNative.GetWindowHandle(this),
-            path => _ = OpenPathAsync(path));
+            path => _ = OpenPathAsync(path),
+            DispatcherQueue);
     }
 
     private void OnImageRequested(object? sender, CoreWebView2WebResourceRequestedEventArgs args)

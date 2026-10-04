@@ -15,7 +15,7 @@ The first screen has **Open** and **Showcase**. **Open** uses the Windows file p
 
 Right-click the empty screen for **Open** and **Showcase**. Right-click the document for **Open** and **Close document** on the web view menu.
 
-Files you open are kept in the taskbar Jump List under Recent. A second launch with one of those files uses the window that is already open.
+Files you open are kept in the taskbar Jump List under Recent. Windows only shows that list when a Start menu shortcut carries the same app id, so the app creates PreviewMD (Windows experiment) in the Start menu. A second launch with one of those files uses the window that is already open.
 
 Ctrl+Tab waits for tabs. The issue leaves tabs until after this slice.
 
