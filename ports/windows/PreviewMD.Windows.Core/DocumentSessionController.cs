@@ -21,5 +21,11 @@ internal sealed class DocumentSessionController
         return Current;
     }
 
+    public DocumentSession Clear()
+    {
+        Current = new DocumentSession.Empty();
+        return Current;
+    }
+
     private int NextRevision() => ++_revision;
 }

@@ -11,7 +11,13 @@ dotnet test ports/windows/PreviewMD.Windows.sln
 dotnet run --project ports/windows/PreviewMD.Windows/PreviewMD.Windows.csproj
 ```
 
-The first screen has **Open** and **Showcase**. **Open** uses the Windows file picker for `.md` and `.markdown`. **Showcase** loads the bundled `welcome.md`. Ctrl+O opens the same picker.
+The first screen has **Open** and **Showcase**. **Open** uses the Windows file picker for `.md` and `.markdown`. **Showcase** loads the bundled `welcome.md`. Drop a Markdown file on the window to open it. Ctrl+O opens the picker. Ctrl+W closes the current document, and closes the window when no document is open.
+
+Right-click the empty screen for **Open** and **Showcase**. Right-click the document for **Open** and **Close document** on the web view menu.
+
+Files you open are kept in the taskbar Jump List under Recent. A second launch with one of those files uses the window that is already open.
+
+Ctrl+Tab waits for tabs. The issue leaves tabs until after this slice.
 
 To open a file without the picker:
 

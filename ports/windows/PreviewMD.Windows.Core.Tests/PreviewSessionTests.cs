@@ -58,6 +58,28 @@ public class PreviewSessionTests
         }
     }
 
+    [Fact]
+    public async Task CloseDocumentReturnsToEmpty()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "previewmd-close-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var note = Path.Combine(directory, "note.md");
+        await File.WriteAllTextAsync(note, "body");
+        var session = new PreviewSession(new RecordingRenderer(), note, directory);
+
+        try
+        {
+            await session.OpenFileAsync(note);
+            session.CloseDocument();
+
+            Assert.IsType<DocumentSession.Empty>(session.Current);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     private sealed class RecordingRenderer : IDocumentRenderer
     {
         public bool SystemDark => false;

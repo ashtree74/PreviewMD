@@ -17,9 +17,12 @@
     window.previewmdLocalImageScheme = "previewmd-local-image";
     document.addEventListener("keydown", function (event) {
       if (!event.ctrlKey || event.altKey || event.shiftKey || event.metaKey) return;
-      if (event.key !== "o" && event.key !== "O") return;
+      var message = event.key === "o" || event.key === "O" ? "open"
+        : event.key === "w" || event.key === "W" ? "close"
+        : "";
+      if (!message) return;
       event.preventDefault();
-      if (window.chrome && window.chrome.webview) window.chrome.webview.postMessage("open");
+      if (window.chrome && window.chrome.webview) window.chrome.webview.postMessage(message);
     });
   </script>
   <script src="renderer/markdown-it.min.js"></script>

@@ -48,6 +48,11 @@ public sealed class PreviewSession
         await RenderCurrentAsync();
     }
 
+    public void CloseDocument()
+    {
+        _controller.Clear();
+    }
+
     private async Task RenderCurrentAsync()
     {
         await _renderGate.WaitAsync();

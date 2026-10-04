@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
@@ -7,6 +9,8 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.Web.WebView2.Core;
 using PreviewMD.Windows.Core;
+using Windows.ApplicationModel.DataTransfer;
+using Windows.Storage;
 using Windows.Storage.Pickers;
 using Windows.Storage.Streams;
 using Windows.System;
@@ -36,6 +40,26 @@ public sealed partial class MainWindow : Window, IDocumentRenderer
         };
         openShortcut.Invoked += OpenShortcutInvoked;
         Root.KeyboardAccelerators.Add(openShortcut);
+
+        var closeShortcut = new KeyboardAccelerator
+        {
+            Key = VirtualKey.W,
+            Modifiers = VirtualKeyModifiers.Control,
+        };
+        closeShortcut.Invoked += CloseShortcutInvoked;
+        Root.KeyboardAccelerators.Add(closeShortcut);
+        Activated += OnFirstActivation;
+    }
+
+    bool _shellAttached;
+
+    void OnFirstActivation(object sender, WindowActivatedEventArgs args)
+    {
+        if (_shellAttached)
+            return;
+        _shellAttached = true;
+        var hwnd = WindowNative.GetWindowHandle(this);
+        ShellIntegration.AttachWindow(hwnd, path => _ = OpenPathAsync(path));
     }
 
     public bool SystemDark => (Content as FrameworkElement)?.ActualTheme == ElementTheme.Dark;
@@ -47,6 +71,9 @@ public sealed partial class MainWindow : Window, IDocumentRenderer
         cancellationToken.ThrowIfCancellationRequested();
         var script = "window.previewmdRender(" + RenderPayloadJson.Serialize(payload) + ")";
         await Preview.CoreWebView2.ExecuteScriptAsync(script);
+        if (_session.Current is DocumentSession.Empty)
+            return;
+
         EmptyState.Visibility = Visibility.Collapsed;
     }
 
@@ -82,6 +109,7 @@ public sealed partial class MainWindow : Window, IDocumentRenderer
         core.NavigationStarting += OnNavigationStarting;
         core.NewWindowRequested += OnNewWindowRequested;
         core.WebMessageReceived += OnWebMessageReceived;
+        core.ContextMenuRequested += OnContextMenuRequested;
 
         var loaded = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         void Completed(object? sender, CoreWebView2NavigationCompletedEventArgs args)
@@ -96,6 +124,9 @@ public sealed partial class MainWindow : Window, IDocumentRenderer
             throw new InvalidOperationException("The renderer shell did not load.");
 
         _rendererReady = true;
+        ShellIntegration.AttachWindow(
+            WindowNative.GetWindowHandle(this),
+            path => _ = OpenPathAsync(path));
     }
 
     private void OnImageRequested(object? sender, CoreWebView2WebResourceRequestedEventArgs args)
@@ -192,13 +223,41 @@ public sealed partial class MainWindow : Window, IDocumentRenderer
 
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs args)
     {
-        if (args.TryGetWebMessageAsString() == "open")
+        var message = args.TryGetWebMessageAsString();
+        if (message == "open")
             _ = OpenFromPickerAsync();
+        else if (message == "close")
+            CloseCurrent();
+    }
+
+    private void OnContextMenuRequested(object? sender, CoreWebView2ContextMenuRequestedEventArgs args)
+    {
+        var environment = Preview.CoreWebView2.Environment;
+        var open = environment.CreateContextMenuItem("Open", null, CoreWebView2ContextMenuItemKind.Command);
+        open.CustomItemSelected += (_, _) => DispatcherQueue.TryEnqueue(() => _ = OpenFromPickerAsync());
+        var close = environment.CreateContextMenuItem("Close document", null, CoreWebView2ContextMenuItemKind.Command);
+        close.CustomItemSelected += (_, _) => DispatcherQueue.TryEnqueue(CloseCurrent);
+        args.MenuItems.Insert(0, environment.CreateContextMenuItem("", null, CoreWebView2ContextMenuItemKind.Separator));
+        args.MenuItems.Insert(0, close);
+        args.MenuItems.Insert(0, open);
     }
 
     public void OpenRequestedPath(string path) => _ = OpenPathAsync(path);
 
     public void OpenRequestedShowcase() => _ = ShowShowcaseAsync();
+
+    public void HandleCommandLine(string[] command)
+    {
+        if (command.Any(argument => argument.Equals("--showcase", StringComparison.OrdinalIgnoreCase)))
+        {
+            OpenRequestedShowcase();
+            return;
+        }
+
+        var path = command.FirstOrDefault(RecentDocuments.IsMarkdownPath);
+        if (path is not null)
+            OpenRequestedPath(path);
+    }
 
     private void OpenClicked(object sender, RoutedEventArgs args) => _ = OpenFromPickerAsync();
 
@@ -208,6 +267,45 @@ public sealed partial class MainWindow : Window, IDocumentRenderer
     {
         args.Handled = true;
         _ = OpenFromPickerAsync();
+    }
+
+    private void CloseShortcutInvoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        args.Handled = true;
+        CloseCurrent();
+    }
+
+    private void CloseCurrent()
+    {
+        if (_session.Current is DocumentSession.Empty)
+        {
+            Close();
+            return;
+        }
+
+        _session.CloseDocument();
+        EmptyState.Visibility = Visibility.Visible;
+        ClearStatus();
+    }
+
+    private void RootDragOver(object sender, DragEventArgs args)
+    {
+        args.AcceptedOperation = DataPackageOperation.Copy;
+        args.Handled = true;
+    }
+
+    private async void RootDrop(object sender, DragEventArgs args)
+    {
+        if (!args.DataView.Contains(StandardDataFormats.StorageItems))
+            return;
+
+        var items = await args.DataView.GetStorageItemsAsync();
+        var paths = new List<string>();
+        foreach (var item in items)
+            paths.Add(item.Path);
+        var markdown = RecentDocuments.FirstMarkdown(paths);
+        if (markdown is not null)
+            await OpenPathAsync(markdown);
     }
 
     private async Task OpenFromPickerAsync()
@@ -236,6 +334,19 @@ public sealed partial class MainWindow : Window, IDocumentRenderer
         {
             ClearStatus();
             await _session.OpenFileAsync(path);
+            var remembered = await RecentFiles.RememberAsync(path);
+            try
+            {
+                await ShellIntegration.PublishJumpListAsync(remembered);
+            }
+            catch (Exception exception)
+            {
+                var folder = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "PreviewMD.Windows.Experiment");
+                Directory.CreateDirectory(folder);
+                await File.WriteAllTextAsync(Path.Combine(folder, "jumplist-error.txt"), exception.ToString());
+            }
         }
         catch (Exception exception)
         {
