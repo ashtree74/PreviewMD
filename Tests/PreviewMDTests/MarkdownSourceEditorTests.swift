@@ -5,6 +5,55 @@ import XCTest
 @testable import PreviewMD
 
 final class MarkdownSourceEditorTests: XCTestCase {
+    func testReadingStatisticsPreserveCocoaTextUnicodeAndWhitespace() {
+        let samples = ["", "zażółć\t世界\r\n👩🏽‍💻", "e\u{301} café\u{00a0}test", "🇵🇱\n\nword", "a\r\nb\r c\u{2028}d"]
+        var text = MarkdownText(wrappedValue: NSMutableString(string: samples[1]) as String)
+        for sample in samples {
+            let cocoa = NSMutableString(string: sample)
+            text.wrappedValue = cocoa as String
+            cocoa.append(" must not mutate the document")
+            XCTAssertEqual(text.wrappedValue, sample)
+            XCTAssertEqual(text.wordCount, sample.split(whereSeparator: \.isWhitespace).count)
+            XCTAssertEqual(text.characterCount, sample.count)
+        }
+    }
+
+    @MainActor
+    func testHiddenSourceDefersTextAndRestoresLatestContentInTheSameView() async throws {
+        _ = NSApplication.shared
+        let host = NSHostingView(rootView: MarkdownSourceEditor(text: .constant("# Initial"), isVisible: false))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 420),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        defer { window.close() }
+        let textView = try XCTUnwrap(host.descendant(of: MarkdownSourceTextView.self))
+        XCTAssertEqual(textView.string, "", "Preview-only launch must avoid native text layout and highlighting")
+        XCTAssertFalse(textView.isEditable)
+        host.rootView = MarkdownSourceEditor(text: .constant("# Latest\n\nBody"), isVisible: true)
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(host.descendant(of: MarkdownSourceTextView.self) === textView)
+        XCTAssertEqual(textView.string, "# Latest\n\nBody")
+        XCTAssertTrue(textView.isEditable)
+        XCTAssertNotNil(textView.textStorage?.attribute(.foregroundColor, at: 0, effectiveRange: nil))
+        textView.setSelectedRange(NSRange(location: 4, length: 0))
+        window.makeFirstResponder(textView)
+        host.rootView = MarkdownSourceEditor(text: .constant("Changed while hidden"), isVisible: false)
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(textView.string, "# Latest\n\nBody")
+        XCTAssertFalse(textView.isEditable)
+        XCTAssertFalse(window.firstResponder === textView, "Hidden stale source must not receive keyboard input")
+        host.rootView = MarkdownSourceEditor(text: .constant("Final edit"), isVisible: true)
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(host.descendant(of: MarkdownSourceTextView.self) === textView)
+        XCTAssertEqual(textView.string, "Final edit")
+        XCTAssertEqual(textView.selectedRange(), NSRange(location: 4, length: 0))
+    }
+
     func testLineMapIncludesEmptyAndTrailingLines() {
         XCTAssertEqual(MarkdownLineMap.lineStartOffsets(in: ""), [0])
         XCTAssertEqual(MarkdownLineMap.lineStartOffsets(in: "one"), [0])
