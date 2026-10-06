@@ -9,6 +9,26 @@ enum TabCloseDecision {
     case discard
 }
 
+private struct ExternalPollInput: Sendable {
+    let id: UUID
+    let url: URL
+    let snapshot: FileSnapshot
+    let contentRevision: Int
+    let originalContent: String
+    let previousReview: ExternalChangeReview?
+}
+
+private struct ExternalPollResult: Sendable {
+    enum Change: Sendable {
+        case unchanged
+        case changed(MarkdownFileIO.ReadResult, ExternalChangeReview?)
+        case unavailable
+    }
+
+    let input: ExternalPollInput
+    let change: Change
+}
+
 @MainActor
 final class AppState: ObservableObject {
     @Published var documents: [MarkdownDocument] = []
@@ -41,6 +61,7 @@ final class AppState: ObservableObject {
     @Published private(set) var workspaceFolderURL: URL?
     @Published private(set) var workspaceFolderItems: [FolderTreeItem] = []
     @Published private(set) var isWorkspaceFolderLoading = false
+    @Published private(set) var workspaceFolderError: String?
     @Published private(set) var workspaceSearchQuery = ""
     @Published private(set) var workspaceSearchResults: [FolderSearchResult] = []
     @Published private(set) var isWorkspaceSearching = false
@@ -63,6 +84,10 @@ final class AppState: ObservableObject {
     private var workspaceSearchRequestID = UUID()
     private var workspaceSearchTask: Task<Void, Never>?
     private let closeTabDecision: (MarkdownDocument) -> TabCloseDecision
+    private let saveDestination: (MarkdownDocument) -> URL?
+    private let errorPresenter: (String) -> Void
+    private let externalPollData: @Sendable (URL) throws -> Data
+    private var isExternalChangePollRunning = false
 
     /// Restored when focus mode ends, so entering it to read does not quietly
     /// throw away the split/source view or inspector you were working with.
@@ -71,10 +96,16 @@ final class AppState: ObservableObject {
 
     init(
         defaults: UserDefaults = .standard,
-        closeTabDecision: ((MarkdownDocument) -> TabCloseDecision)? = nil
+        closeTabDecision: ((MarkdownDocument) -> TabCloseDecision)? = nil,
+        saveDestination: ((MarkdownDocument) -> URL?)? = nil,
+        errorPresenter: ((String) -> Void)? = nil,
+        externalPollData: @escaping @Sendable (URL) throws -> Data = { try Data(contentsOf: $0) }
     ) {
         self.defaults = defaults
         self.closeTabDecision = closeTabDecision ?? Self.promptForTabClose
+        self.saveDestination = saveDestination ?? Self.promptForSaveDestination
+        self.errorPresenter = errorPresenter ?? Self.showError
+        self.externalPollData = externalPollData
         loadPreferences()
         loadRecentDocuments()
         startLiveReloadPolling()
@@ -91,8 +122,15 @@ final class AppState: ObservableObject {
     }
 
     var currentOutline: [OutlineHeading] {
-        guard let currentDocument else { return [] }
-        return MarkdownOutline.headings(in: currentDocument.content)
+        currentDocument?.outline ?? []
+    }
+
+    func updateOutline(_ headings: [OutlineHeading], for documentID: UUID, content: String) {
+        guard let index = documents.firstIndex(where: { $0.id == documentID }),
+              documents[index].content == content,
+              documents[index].outline != headings
+        else { return }
+        documents[index].outline = headings
     }
 
     var effectiveReadingWidth: Int {
@@ -311,6 +349,7 @@ final class AppState: ObservableObject {
         workspaceFolderURL = nil
         workspaceFolderItems = []
         isWorkspaceFolderLoading = false
+        workspaceFolderError = nil
         sidebarMode = .recent
     }
 
@@ -341,7 +380,7 @@ final class AppState: ObservableObject {
         let items = workspaceFolderItems
         let overrides: [String: String] = documents.reduce(into: [:]) { result, document in
             guard let url = document.url else { return }
-            result[url.standardizedFileURL.path] = document.content
+            result[url.path] = document.content
         }
         workspaceSearchRequestID = requestID
         isWorkspaceSearching = true
@@ -409,10 +448,17 @@ final class AppState: ObservableObject {
     }
 
     private func refreshWorkspaceSearchIfNeeded(for documentID: UUID) {
+        refreshWorkspaceSearchIfNeeded(
+            for: documents.first(where: { $0.id == documentID })?.url
+        )
+    }
+
+    private func refreshWorkspaceSearchIfNeeded(for url: URL?) {
         guard !workspaceSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let document = documents.first(where: { $0.id == documentID }),
-              let url = document.url,
-              isInsideWorkspaceFolder(url)
+              let url,
+              isInsideWorkspaceFolder(url) || workspaceFolderItems.flatMap(\.flattenedFiles).contains(where: {
+                  MarkdownFileIO.canonicalURL(for: $0.url) == url
+              })
         else { return }
         setWorkspaceSearchQuery(workspaceSearchQuery)
     }
@@ -422,14 +468,7 @@ final class AppState: ObservableObject {
         clearsExistingItems: Bool,
         showsLoading: Bool = true
     ) {
-        var isDirectory: ObjCBool = false
-        guard url.isFileURL,
-              FileManager.default.fileExists(
-                atPath: url.path,
-                isDirectory: &isDirectory
-              ),
-              isDirectory.boolValue
-        else {
+        guard url.isFileURL else {
             present(error: "Couldn’t open “\(url.lastPathComponent)” as a folder.")
             return
         }
@@ -450,6 +489,7 @@ final class AppState: ObservableObject {
         }
         if clearsExistingItems {
             workspaceFolderItems = []
+            if workspaceFolderError != nil { workspaceFolderError = nil }
         }
         if showsLoading {
             isWorkspaceFolderLoading = true
@@ -473,6 +513,9 @@ final class AppState: ObservableObject {
                     if showsLoading {
                         self.isWorkspaceFolderLoading = false
                     }
+                    if self.workspaceFolderError != nil {
+                        self.workspaceFolderError = nil
+                    }
                     self.workspaceFolderLoadTask = nil
                     if !self.workspaceSearchQuery.isEmpty,
                        showsLoading || folderContentsChanged {
@@ -493,10 +536,18 @@ final class AppState: ObservableObject {
                         self.isWorkspaceFolderLoading = false
                     }
                     self.workspaceFolderLoadTask = nil
+                    let message = "Couldn’t read “\(url.lastPathComponent)”. \(error.localizedDescription)"
+                    if self.workspaceFolderError != message {
+                        self.workspaceFolderError = message
+                    }
+                    if !self.workspaceFolderItems.isEmpty {
+                        self.workspaceFolderItems = []
+                    }
+                    if self.workspaceSearchTask != nil || !self.workspaceSearchResults.isEmpty || self.isWorkspaceSearching {
+                        self.cancelWorkspaceSearch(clearsQuery: false)
+                    }
                     if showsLoading {
-                        self.present(
-                            error: "Couldn’t read “\(url.lastPathComponent)”. \(error.localizedDescription)"
-                        )
+                        self.present(error: message)
                     }
                 }
             } onCancel: {
@@ -511,8 +562,8 @@ final class AppState: ObservableObject {
             return
         }
 
-        let normalizedURL = url.standardizedFileURL
-        if let existing = documents.first(where: { $0.url?.standardizedFileURL == normalizedURL }) {
+        let normalizedURL = MarkdownFileIO.canonicalURL(for: url)
+        if let existing = documents.first(where: { $0.url == normalizedURL }) {
             selectedDocumentID = existing.id
             sidebarSelection = normalizedURL.path
             touchRecent(normalizedURL)
@@ -611,7 +662,9 @@ final class AppState: ObservableObject {
 
     private func removeTab(_ id: UUID) {
         guard let index = documents.firstIndex(where: { $0.id == id }) else { return }
+        let removedURL = documents[index].url
         documents.remove(at: index)
+        refreshWorkspaceSearchIfNeeded(for: removedURL)
 
         if selectedDocumentID == id {
             if documents.indices.contains(index) {
@@ -758,20 +811,24 @@ final class AppState: ObservableObject {
             completion?(false)
             return
         }
-        let panel = NSSavePanel()
-        panel.title = "Save Markdown"
-        panel.prompt = "Save"
-        panel.nameFieldStringValue = documents[index].isSample
-            ? "PreviewMD Showcase.md"
-            : "\(documents[index].title).md"
-        panel.allowedContentTypes = Self.markdownContentTypes
-        panel.canCreateDirectories = true
-
-        guard panel.runModal() == .OK, let url = panel.url else {
+        guard let url = saveDestination(documents[index]) else {
             completion?(false)
             return
         }
         write(documentID: documentID, to: url, updatesLocation: true, completion: completion)
+    }
+
+    private static func promptForSaveDestination(_ document: MarkdownDocument) -> URL? {
+        let panel = NSSavePanel()
+        panel.title = "Save Markdown"
+        panel.prompt = "Save"
+        panel.nameFieldStringValue = document.isSample
+            ? "PreviewMD Showcase.md"
+            : "\(document.title).md"
+        panel.allowedContentTypes = Self.markdownContentTypes
+        panel.canCreateDirectories = true
+
+        return panel.runModal() == .OK ? panel.url : nil
     }
 
     private func confirmAndSaveDirtyDocuments(
@@ -873,23 +930,32 @@ final class AppState: ObservableObject {
                     isApplied: true
                 )
                 : nil
-            documents[index].content = readResult.content
-            documents[index].lastSavedContent = readResult.content
-            documents[index].contentRevision &+= 1
-            documents[index].undoHistory.removeAll()
-            documents[index].redoHistory.removeAll()
-            documents[index].lastEditOrigin = nil
-            documents[index].lastEditAt = nil
-            documents[index].fileFormat = readResult.format
-            documents[index].diskSnapshot = readResult.snapshot
-            documents[index].fileModifiedAt = readResult.snapshot.modificationDate
-            documents[index].hasExternalChanges = false
-            documents[index].externalChangeReview = review
+            applyReadResult(readResult, at: index, review: review)
             return true
         } catch {
             present(error: "Couldn’t reload “\(url.lastPathComponent)”. \(error.localizedDescription)")
             return false
         }
+    }
+
+    private func applyReadResult(
+        _ readResult: MarkdownFileIO.ReadResult,
+        at index: Int,
+        review: ExternalChangeReview?
+    ) {
+        documents[index].content = readResult.content
+        documents[index].lastSavedContent = readResult.content
+        documents[index].contentRevision &+= 1
+        documents[index].undoHistory.removeAll()
+        documents[index].redoHistory.removeAll()
+        documents[index].lastEditOrigin = nil
+        documents[index].lastEditAt = nil
+        documents[index].fileFormat = readResult.format
+        documents[index].diskSnapshot = readResult.snapshot
+        documents[index].fileModifiedAt = readResult.snapshot.modificationDate
+        documents[index].hasExternalChanges = false
+        documents[index].externalChangeReview = review
+        refreshWorkspaceSearchIfNeeded(for: documents[index].id)
     }
 
     func moveExternalChangeSelection(
@@ -929,18 +995,29 @@ final class AppState: ObservableObject {
             return
         }
 
+        let destination = MarkdownFileIO.canonicalURL(for: url)
+        let duplicateDocuments = documents.filter {
+            $0.id != documentID && $0.url == destination
+        }
+        guard !duplicateDocuments.contains(where: \.isDirty) else {
+            present(error: "“\(url.lastPathComponent)” is already open with unsaved changes. Save or close that tab before replacing this file.")
+            completion?(false)
+            return
+        }
+        let previousURL = documents[index].url
+
         do {
             let snapshot = try MarkdownFileIO.write(
                 documents[index].content,
-                to: url,
+                to: destination,
                 format: documents[index].fileFormat
             )
             if updatesLocation {
-                documents[index].url = url
-                documents[index].title = url.deletingPathExtension().lastPathComponent
+                documents[index].url = destination
+                documents[index].title = destination.deletingPathExtension().lastPathComponent
                 documents[index].isSample = false
                 if selectedDocumentID == documentID {
-                    sidebarSelection = url.path
+                    sidebarSelection = destination.path
                 }
             }
             documents[index].lastSavedContent = documents[index].content
@@ -948,8 +1025,11 @@ final class AppState: ObservableObject {
             documents[index].fileModifiedAt = snapshot.modificationDate
             documents[index].hasExternalChanges = false
             documents[index].externalChangeReview = nil
-            touchRecent(url)
-            if updatesLocation, isInsideWorkspaceFolder(url) {
+            duplicateDocuments.forEach { removeTab($0.id) }
+            touchRecent(destination)
+            refreshWorkspaceSearchIfNeeded(for: previousURL)
+            refreshWorkspaceSearchIfNeeded(for: destination)
+            if updatesLocation, isInsideWorkspaceFolder(destination) {
                 refreshWorkspaceFolder()
             }
             completion?(true)
@@ -973,8 +1053,8 @@ final class AppState: ObservableObject {
 
     private func isInsideWorkspaceFolder(_ url: URL) -> Bool {
         guard let workspaceFolderURL else { return false }
-        let rootComponents = workspaceFolderURL.standardizedFileURL.pathComponents
-        let fileComponents = url.standardizedFileURL.pathComponents
+        let rootComponents = MarkdownFileIO.canonicalURL(for: workspaceFolderURL).pathComponents
+        let fileComponents = MarkdownFileIO.canonicalURL(for: url).pathComponents
         return fileComponents.count > rootComponents.count
             && fileComponents.starts(with: rootComponents)
     }
@@ -1171,50 +1251,19 @@ final class AppState: ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(750))
                 guard let self else { return }
-                self.pollForExternalChanges()
+                await self.pollForExternalChanges()
             }
         }
     }
 
-    func pollForExternalChanges(now: Date = Date()) {
-        guard liveReloadEnabled else { return }
-
-        for index in documents.indices {
-            guard let url = documents[index].url,
-                  let savedSnapshot = documents[index].diskSnapshot,
-                  let currentSnapshot = try? FileSnapshot.capture(url: url),
-                  currentSnapshot.fingerprint != savedSnapshot.fingerprint
-            else { continue }
-
-            if documents[index].isDirty {
-                if let readResult = try? MarkdownFileIO.read(from: url),
-                   documents[index].externalChangeReview?.updatedContent != readResult.content {
-                    let previousReview = documents[index].externalChangeReview
-                    documents[index].externalChangeReview = ExternalChangeReview(
-                        id: previousReview?.id ?? UUID(),
-                        originalContent: previousReview?.originalContent
-                            ?? documents[index].lastSavedContent,
-                        updatedContent: readResult.content,
-                        selectedHunkIndex: previousReview?.selectedHunkIndex ?? 0,
-                        isApplied: false
-                    )
-                }
-                // Keep the conflict visible without publishing the same value
-                // on every 750 ms polling pass. Repeated publication also
-                // invalidates open menu hierarchies.
-                if !documents[index].hasExternalChanges {
-                    documents[index].hasExternalChanges = true
-                }
-            } else {
-                _ = reload(
-                    documentID: documents[index].id,
-                    tracksExternalChanges: true
-                )
-            }
-        }
+    func pollForExternalChanges(now: Date = Date()) async {
+        guard liveReloadEnabled, !isExternalChangePollRunning else { return }
+        isExternalChangePollRunning = true
+        defer { isExternalChangePollRunning = false }
 
         if let workspaceFolderURL,
            !isWorkspaceFolderLoading,
+           workspaceFolderLoadTask == nil,
            now.timeIntervalSince(lastWorkspaceLiveRefresh) >= 2 {
             lastWorkspaceLiveRefresh = now
             loadFolder(
@@ -1222,6 +1271,100 @@ final class AppState: ObservableObject {
                 clearsExistingItems: false,
                 showsLoading: false
             )
+        }
+
+        let inputs = documents.compactMap { document -> ExternalPollInput? in
+            guard let url = document.url, let snapshot = document.diskSnapshot else { return nil }
+            return ExternalPollInput(
+                id: document.id,
+                url: url,
+                snapshot: snapshot,
+                contentRevision: document.contentRevision,
+                originalContent: document.externalChangeReview?.originalContent ?? document.lastSavedContent,
+                previousReview: document.externalChangeReview
+            )
+        }
+        guard !inputs.isEmpty else { return }
+
+        // Both full-file fingerprinting and line diffs can be expensive. Do
+        // them away from the main actor and never overlap polling passes.
+        let readData = externalPollData
+        let pollTask = Task.detached(priority: .utility) {
+            try inputs.map { input -> ExternalPollResult in
+                try Task.checkCancellation()
+                do {
+                    let data = try readData(input.url)
+                    let snapshot = try FileSnapshot.capture(url: input.url, data: data)
+                    guard snapshot.fingerprint != input.snapshot.fingerprint else {
+                        return ExternalPollResult(input: input, change: .unchanged)
+                    }
+                    let read = try MarkdownFileIO.read(from: input.url, data: data, snapshot: snapshot)
+                    let review: ExternalChangeReview?
+                    if input.previousReview?.updatedContent == read.content {
+                        review = input.previousReview
+                    } else {
+                        review = ExternalChangeReview(
+                            id: input.previousReview?.id ?? UUID(),
+                            originalContent: input.originalContent,
+                            updatedContent: read.content,
+                            selectedHunkIndex: input.previousReview?.selectedHunkIndex ?? 0,
+                            isApplied: false
+                        )
+                    }
+                    return ExternalPollResult(input: input, change: .changed(read, review))
+                } catch {
+                    return ExternalPollResult(input: input, change: .unavailable)
+                }
+            }
+        }
+        let results: [ExternalPollResult]
+        do {
+            results = try await withTaskCancellationHandler {
+                try await pollTask.value
+            } onCancel: {
+                pollTask.cancel()
+            }
+        } catch {
+            return
+        }
+        guard liveReloadEnabled, !Task.isCancelled else { return }
+
+        for result in results {
+            let input = result.input
+            guard let index = documents.firstIndex(where: { $0.id == input.id }),
+                  documents[index].url == input.url,
+                  documents[index].diskSnapshot == input.snapshot,
+                  documents[index].contentRevision == input.contentRevision
+            else { continue }
+
+            switch result.change {
+            case .unchanged:
+                if documents[index].hasExternalChanges {
+                    documents[index].hasExternalChanges = false
+                    if documents[index].externalChangeReview?.isApplied == false {
+                        documents[index].externalChangeReview = nil
+                    }
+                }
+            case .unavailable:
+                // Deleted or temporarily unreadable files must not trigger a
+                // repeating modal alert from an automatic background check.
+                if !documents[index].hasExternalChanges {
+                    documents[index].hasExternalChanges = true
+                }
+            case let .changed(read, review):
+                if documents[index].isDirty {
+                    if documents[index].externalChangeReview?.updatedContent != read.content {
+                        documents[index].externalChangeReview = review
+                    }
+                    if !documents[index].hasExternalChanges {
+                        documents[index].hasExternalChanges = true
+                    }
+                } else {
+                    var appliedReview = review
+                    appliedReview?.isApplied = true
+                    applyReadResult(read, at: index, review: appliedReview)
+                }
+            }
         }
     }
 
@@ -1264,6 +1407,10 @@ final class AppState: ObservableObject {
 
     private func present(error: String) {
         errorMessage = error
+        errorPresenter(error)
+    }
+
+    private static func showError(_ error: String) {
         let alert = NSAlert()
         alert.messageText = "PreviewMD"
         alert.informativeText = error

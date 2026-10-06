@@ -64,6 +64,7 @@ Useful checks:
 ```bash
 swift test
 python3 -m unittest discover -s site -p 'test_*.py'
+node --test Tests/Site/signup.test.cjs
 zsh -n scripts/*.sh
 ./scripts/build-app.sh
 ```
@@ -93,7 +94,9 @@ In particular:
 ## Tests and reviewability
 
 Prefer a failing test before a bug fix when the behavior can be isolated.
-Tests live in `Tests/PreviewMDTests/`; site tests live in `site/test_server.py`.
+Native and renderer tests live in `Tests/PreviewMDTests/`. Server tests live in
+`site/test_server.py`; signup lifecycle tests execute the actual modal JavaScript
+from `Tests/Site/signup.test.cjs`, outside the public document root.
 
 In a pull request, include:
 

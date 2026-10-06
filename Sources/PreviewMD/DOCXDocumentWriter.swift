@@ -109,6 +109,13 @@ private struct WordprocessingMLBuilder {
         let data: Data
     }
 
+    private struct ListNumbering {
+        let id: Int
+        let ordered: Bool
+        let level: Int
+        let start: Int32
+    }
+
     private let title: String
     private let assets: [String: PortableRichTextClipboard.EmbeddedAsset]
     private var relationships: [Relationship] = [
@@ -126,6 +133,7 @@ private struct WordprocessingMLBuilder {
         ),
     ]
     private var mediaFiles: [MediaFile] = []
+    private var listNumberings: [ListNumbering] = []
     private var relationshipCounter = 3
     private var drawingCounter = 1
 
@@ -236,6 +244,15 @@ private struct WordprocessingMLBuilder {
         ordered: Bool,
         level: Int
     ) -> [String] {
+        // Each HTML list has its own counter. Sharing a numbering instance
+        // makes Word continue a later list, even when HTML restarts it.
+        let numbering = ListNumbering(
+            id: listNumberings.count + 1,
+            ordered: ordered,
+            level: min(8, level),
+            start: Int32(list.attribute(forName: "start")?.stringValue ?? "1") ?? 1
+        )
+        listNumberings.append(numbering)
         var result: [String] = []
         for child in list.children ?? [] {
             guard let item = child as? XMLElement,
@@ -251,8 +268,8 @@ private struct WordprocessingMLBuilder {
             }.joined()
             result.append(numberedParagraphXML(
                 inline: inline,
-                numberID: ordered ? 2 : 1,
-                level: min(8, level)
+                numberID: numbering.id,
+                level: numbering.level
             ))
             for nested in item.children ?? [] {
                 guard let nestedList = nested as? XMLElement else { continue }
@@ -632,7 +649,14 @@ private struct WordprocessingMLBuilder {
             let left = 720 + level * 360
             return "<w:lvl w:ilvl=\"\(level)\"><w:start w:val=\"1\"/><w:numFmt w:val=\"decimal\"/><w:lvlText w:val=\"%\(level + 1).\"/><w:lvlJc w:val=\"left\"/><w:pPr><w:tabs><w:tab w:val=\"num\" w:pos=\"\(left)\"/></w:tabs><w:ind w:left=\"\(left)\" w:hanging=\"360\"/></w:pPr></w:lvl>"
         }.joined()
-        return "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:numbering xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:abstractNum w:abstractNumId=\"0\"><w:multiLevelType w:val=\"hybridMultilevel\"/>\(bulletLevels)</w:abstractNum><w:abstractNum w:abstractNumId=\"1\"><w:multiLevelType w:val=\"hybridMultilevel\"/>\(decimalLevels)</w:abstractNum><w:num w:numId=\"1\"><w:abstractNumId w:val=\"0\"/></w:num><w:num w:numId=\"2\"><w:abstractNumId w:val=\"1\"/></w:num></w:numbering>"
+        let instances = listNumberings.map { numbering in
+            let abstractID = numbering.ordered ? 1 : 0
+            let override = numbering.ordered
+                ? "<w:lvlOverride w:ilvl=\"\(numbering.level)\"><w:startOverride w:val=\"\(numbering.start)\"/></w:lvlOverride>"
+                : ""
+            return "<w:num w:numId=\"\(numbering.id)\"><w:abstractNumId w:val=\"\(abstractID)\"/>\(override)</w:num>"
+        }.joined()
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:numbering xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:abstractNum w:abstractNumId=\"0\"><w:multiLevelType w:val=\"hybridMultilevel\"/>\(bulletLevels)</w:abstractNum><w:abstractNum w:abstractNumId=\"1\"><w:multiLevelType w:val=\"hybridMultilevel\"/>\(decimalLevels)</w:abstractNum>\(instances)</w:numbering>"
     }
 
     private func xmlEscape(_ value: String) -> String {

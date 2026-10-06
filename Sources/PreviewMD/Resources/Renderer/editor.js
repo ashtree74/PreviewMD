@@ -18,6 +18,68 @@
   let ignoreSplitSelectionUntil = 0;
   let ignoreSplitScrollUntil = 0;
   let splitSynchronizedRange = null;
+  let splitSynchronizationEnabled = true;
+  let splitSourcePositionsDirty = false;
+  let splitLineOffsetsCache = null;
+  let blockSerializationCache = new WeakMap();
+
+  // Read mutation records synchronously when flushing: Save can arrive before
+  // MutationObserver's queued callback, and checkbox state is a DOM property.
+  const serializationObserver = new MutationObserver(invalidateSerializedBlocks);
+  serializationObserver.observe(article, {
+    subtree: true,
+    childList: true,
+    characterData: true,
+    attributes: true,
+    attributeFilter: [
+      "href", "title", "alt", "src", "start", "align", "style", "class",
+      "data-source", "data-math-source", "data-frontmatter-source",
+      "data-editor-insert-markdown", "data-previewmd-source",
+    ],
+  });
+
+  function invalidateSerializedBlock(node) {
+    if (node && node.parentNode === article) {
+      blockSerializationCache.delete(node);
+      return;
+    }
+    let block = node && (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement);
+    while (block && block.parentElement !== article) block = block.parentElement;
+    if (block) blockSerializationCache.delete(block);
+  }
+
+  function invalidateSerializedBlocks(records) {
+    records.forEach((record) => {
+      if (record.type === "childList" && record.target === article) {
+        record.addedNodes.forEach((node) => blockSerializationCache.delete(node));
+        record.removedNodes.forEach((node) => blockSerializationCache.delete(node));
+        return;
+      }
+      if (record.type === "attributes") {
+        if (record.attributeName === "class" && record.target.tagName !== "CODE") return;
+        if (record.attributeName === "style" && !record.target.matches("td, th")) return;
+      }
+      invalidateSerializedBlock(record.target);
+    });
+  }
+
+  function serializedDocumentBlock(node) {
+    const cached = blockSerializationCache.get(node);
+    if (cached && cached.checkboxes.every(
+      (checkbox, index) => checkbox.checked === cached.checked[index]
+    )) {
+      return cached.markdown;
+    }
+    const markdown = serializeBlock(node).trimEnd();
+    const checkboxes = node.nodeType === Node.ELEMENT_NODE
+      ? Array.from(node.querySelectorAll('input[type="checkbox"]')) : [];
+    blockSerializationCache.set(node, {
+      markdown,
+      checkboxes,
+      checked: checkboxes.map((checkbox) => checkbox.checked),
+    });
+    return markdown;
+  }
 
   const keyboardObjectSelector =
     ".frontmatter-card, .table-scroll, .code-card, .diagram-card, .katex-display, .katex, img, hr:not(.footnotes-sep)";
@@ -1155,6 +1217,10 @@
 
   function editorDidRender(markdown, shouldEdit) {
     currentMarkdown = markdown || "";
+    serializationObserver.takeRecords();
+    blockSerializationCache = new WeakMap();
+    splitSourcePositionsDirty = false;
+    splitLineOffsetsCache = null;
     domChanged = false;
     if (shouldEdit === true && !article.firstChild) {
       article.innerHTML = "<p><br></p>";
@@ -1197,7 +1263,8 @@
     pendingHistoryBoundary = false;
     domChanged = false;
     currentMarkdown = markdown;
-    refreshSplitSourcePositions();
+    splitSourcePositionsDirty = true;
+    splitLineOffsetsCache = null;
     if (
       window.webkit &&
       window.webkit.messageHandlers &&
@@ -1208,6 +1275,7 @@
         historyBoundary: historyBoundary,
       });
     }
+    if (window.previewmdPublishOutline) window.previewmdPublishOutline(markdown);
     return markdown;
   }
 
@@ -1220,7 +1288,8 @@
       const historyBoundary = pendingHistoryBoundary;
       pendingHistoryBoundary = false;
       currentMarkdown = markdown;
-      refreshSplitSourcePositions();
+      splitSourcePositionsDirty = true;
+      splitLineOffsetsCache = null;
       if (
         window.webkit &&
         window.webkit.messageHandlers &&
@@ -1231,6 +1300,7 @@
           historyBoundary: historyBoundary,
         });
       }
+      if (window.previewmdPublishOutline) window.previewmdPublishOutline(markdown);
     } else {
       pendingHistoryBoundary = false;
     }
@@ -1703,12 +1773,13 @@
   }
 
   function serializeDocument() {
+    invalidateSerializedBlocks(serializationObserver.takeRecords());
     const blocks = [];
     Array.from(article.childNodes).forEach((node) => {
-      const value = serializeBlock(node).trimEnd();
+      const value = serializedDocumentBlock(node);
       if (value) blocks.push(value);
     });
-    return blocks.join("\n\n").replace(/\n{4,}/g, "\n\n\n") + (blocks.length ? "\n" : "");
+    return blocks.join("\n\n") + (blocks.length ? "\n" : "");
   }
 
   function serializeFragment(container) {
@@ -1718,11 +1789,11 @@
       const value = serializeBlock(node).trimEnd();
       if (value) blocks.push(value);
     });
-    return blocks.join("\n\n").replace(/\n{4,}/g, "\n\n\n");
+    return blocks.join("\n\n");
   }
 
   function serializeBlock(node) {
-    if (node.nodeType === Node.TEXT_NODE) return escapeText(node.nodeValue.trim());
+    if (node.nodeType === Node.TEXT_NODE) return escapeParagraphSyntax(escapeText(node.nodeValue.trim()));
     if (node.nodeType !== Node.ELEMENT_NODE) return "";
     if (node.matches(".editor-object-source, .code-toolbar, .diagram-label")) return "";
     if (node.dataset.editorInsertMarkdown !== undefined) {
@@ -1736,7 +1807,7 @@
     if (/^h[1-6]$/.test(tag)) {
       return "#".repeat(Number(tag[1])) + " " + serializeChildrenInline(node).trim();
     }
-    if (tag === "p") return serializeChildrenInline(node).trim();
+    if (tag === "p") return escapeParagraphSyntax(serializeChildrenInline(node).trim());
     if (tag === "blockquote") return serializeBlockquote(node);
     if (tag === "ul" || tag === "ol") return serializeList(node);
     if (node.matches(".code-card")) return serializeCodeCard(node);
@@ -1749,7 +1820,7 @@
     if (tag === "hr") return node.classList.contains("footnotes-sep") ? "" : "---";
     if (tag === "section" && node.classList.contains("footnotes")) return serializeFootnotes(node);
     if (tag === "div" && !hasDirectBlockChildren(node)) {
-      return serializeChildrenInline(node).trim();
+      return escapeParagraphSyntax(serializeChildrenInline(node).trim());
     }
     if (tag === "div" || tag === "section" || tag === "article") {
       return Array.from(node.childNodes)
@@ -1810,13 +1881,29 @@
   function escapeText(value) {
     return (value || "")
       .replace(/\\/g, "\\\\")
-      .replace(/([*_[\]`])/g, "\\$1");
+      .replace(/([*_[\]`~])/g, "\\$1");
+  }
+
+  // Text that the DOM represents as a paragraph must stay a paragraph when
+  // reopened. Escaping inline punctuation alone misses block syntax.
+  function escapeParagraphSyntax(value) {
+    return value
+      .replace(/^( {0,3})(#{1,6})(?=\s|$)/gm, "$1\\$2")
+      .replace(/^( {0,3})(>)/gm, "$1\\$2")
+      .replace(/^( {0,3})([+-])(?=\s|$)/gm, "$1\\$2")
+      .replace(/^( {0,3}\d+)([.)])(?=\s|$)/gm, "$1\\$2")
+      .replace(/^( {0,3})([-=])(?=(?:[ \t]*\2)*[ \t]*$)/gm, "$1\\$2");
   }
 
   function serializeInlineCode(value) {
+    // CommonMark code spans turn source line endings into spaces. Normalize
+    // before paragraph escaping so literal block markers inside code are never
+    // mistaken for the start of a new Markdown block.
+    value = value.replace(/\r\n?|\n/g, " ");
     const runs = (value.match(/`+/g) || []).map((run) => run.length);
     const fence = "`".repeat(Math.max(1, runs.length ? Math.max.apply(null, runs) + 1 : 1));
-    const padding = value.startsWith("`") || value.endsWith("`") ? " " : "";
+    const padding = value.startsWith("`") || value.endsWith("`") ||
+      (value.startsWith(" ") && value.endsWith(" ") && /\S/.test(value)) ? " " : "";
     return fence + padding + value + padding + fence;
   }
 
@@ -1902,7 +1989,7 @@
     let inline = "";
     const flushInline = () => {
       const value = inline.trim();
-      if (value) blocks.push(value);
+      if (value) blocks.push(escapeParagraphSyntax(value));
       inline = "";
     };
 
@@ -1915,7 +2002,7 @@
       if (node.nodeType !== Node.ELEMENT_NODE) return;
       const value =
         node.tagName.toLowerCase() === "p"
-          ? serializeChildrenInline(node).trim()
+          ? escapeParagraphSyntax(serializeChildrenInline(node).trim())
           : serializeBlock(node).trim();
       if (value) blocks.push(value);
     });
@@ -2247,6 +2334,7 @@
   }
 
   function splitSourceLineOffsets() {
+    if (splitLineOffsetsCache) return splitLineOffsetsCache;
     const offsets = [0];
     for (let index = 0; index < currentMarkdown.length; index += 1) {
       const code = currentMarkdown.charCodeAt(index);
@@ -2267,6 +2355,7 @@
         offsets.push(index + 1);
       }
     }
+    splitLineOffsetsCache = offsets;
     return offsets;
   }
 
@@ -2286,6 +2375,8 @@
   }
 
   function refreshSplitSourcePositions() {
+    invalidateSerializedBlocks(serializationObserver.takeRecords());
+    splitSourcePositionsDirty = false;
     article
       .querySelectorAll(
         "[data-previewmd-source-start][data-previewmd-source-end]"
@@ -2297,7 +2388,7 @@
     const lineOffsets = splitSourceLineOffsets();
     let cursor = 0;
     Array.from(article.children).forEach((block) => {
-      const source = serializeBlock(block).trimEnd();
+      const source = serializedDocumentBlock(block);
       if (!source) return;
       const found = currentMarkdown.indexOf(source, cursor);
       if (found < cursor) return;
@@ -2314,6 +2405,11 @@
       }
       cursor = sourceEnd;
     });
+  }
+
+  function ensureSplitSourcePositions() {
+    if (domChanged) flushEditor();
+    if (splitSourcePositionsDirty) refreshSplitSourcePositions();
   }
 
   function setSplitSourcePosition(element, sourceStart, sourceEnd, lineOffsets) {
@@ -2391,6 +2487,7 @@
   }
 
   function splitMappedElements() {
+    ensureSplitSourcePositions();
     return Array.from(
       article.querySelectorAll(
         "[data-previewmd-source-start][data-previewmd-source-end]"
@@ -2523,6 +2620,7 @@
   }
 
   function currentSplitSelection() {
+    ensureSplitSourcePositions();
     const selection = window.getSelection();
     if (!selectionInsideArticle(selection) || !selection.rangeCount) return null;
     const range = selection.getRangeAt(0);
@@ -2610,6 +2708,7 @@
 
   function applySplitSelection(position) {
     if (!position) return false;
+    ensureSplitSourcePositions();
     const start = Math.max(
       0,
       Math.min(Number(position.start) || 0, currentMarkdown.length)
@@ -2750,9 +2849,11 @@
   }
 
   function scheduleSplitSelectionPublication() {
+    if (!splitSynchronizationEnabled) return;
     if (splitSelectionFrame) return;
     splitSelectionFrame = window.requestAnimationFrame(() => {
       splitSelectionFrame = 0;
+      if (!splitSynchronizationEnabled) return;
       if (performance.now() < ignoreSplitSelectionUntil) return;
       const position = currentSplitSelection();
       if (position) {
@@ -2763,9 +2864,11 @@
   }
 
   function scheduleSplitScrollPublication() {
+    if (!splitSynchronizationEnabled) return;
     if (splitScrollFrame) return;
     splitScrollFrame = window.requestAnimationFrame(() => {
       splitScrollFrame = 0;
+      if (!splitSynchronizationEnabled) return;
       if (performance.now() < ignoreSplitScrollUntil) return;
       const position = currentSplitScrollPosition();
       if (position) {
@@ -2830,7 +2933,10 @@
     window.requestAnimationFrame(updateBlockInserter);
   });
   article.addEventListener("change", (event) => {
-    if (event.target.matches('input[type="checkbox"]')) scheduleChange(true, true);
+    if (event.target.matches('input[type="checkbox"]')) {
+      invalidateSerializedBlock(event.target);
+      scheduleChange(true, true);
+    }
   });
   article.addEventListener("paste", handlePlainTextPaste);
   article.addEventListener("click", (event) => {
@@ -2927,6 +3033,10 @@
   window.previewmdCurrentSplitSelection = currentSplitSelection;
   window.previewmdApplySplitSelection = applySplitSelection;
   window.previewmdClearSplitSynchronization = clearSplitCounterpartIndicator;
+  window.previewmdSetSplitSynchronizationEnabled = function (value) {
+    splitSynchronizationEnabled = value === true;
+    if (!splitSynchronizationEnabled) clearSplitCounterpartIndicator();
+  };
   window.previewmdCurrentSplitScrollPosition = currentSplitScrollPosition;
   window.previewmdApplySplitScrollPosition = applySplitScrollPosition;
   window.previewmdAvailableBlocks = function () {

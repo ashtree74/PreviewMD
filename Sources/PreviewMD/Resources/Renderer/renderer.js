@@ -10,6 +10,8 @@
   let activeSearchText = "";
   let lastRenderOptions = null;
   let printRestoreOptions = null;
+  let printRestoreViewport = null;
+  let lastPublishedOutline = "";
   let externalChangeTargets = [];
 
   const escapeHtml = (value) =>
@@ -236,6 +238,55 @@
     return defaultHeadingOpen(tokens, index, options, env, self);
   };
 
+  function inlineOutlineText(tokens) {
+    return (tokens || []).map((token) => {
+      if (token.type === "text" || token.type === "code_inline") return token.content;
+      if (token.type === "softbreak" || token.type === "hardbreak") return " ";
+      return token.children ? inlineOutlineText(token.children) : "";
+    }).join("");
+  }
+
+  function outlineFromTokens(tokens) {
+    const headings = [];
+    tokens.forEach((token, index) => {
+      if (token.type !== "heading_open") return;
+      const inline = tokens[index + 1];
+      headings.push({
+        id: "heading-" + headings.length,
+        level: Number(token.tag.slice(1)),
+        title: inlineOutlineText(inline && inline.children).trim(),
+      });
+    });
+    return headings;
+  }
+
+  window.previewmdOutlineForMarkdown = function (markdown) {
+    return outlineFromTokens(md.parse(extractFrontmatter(markdown).body, {}));
+  };
+
+  function publishOutline(markdown, headings, force) {
+    const serialized = JSON.stringify(headings);
+    const bridge = window.webkit && window.webkit.messageHandlers.outlineChange;
+    if (!bridge || (!force && serialized === lastPublishedOutline)) return;
+    lastPublishedOutline = serialized;
+    bridge.postMessage({ markdown: markdown, headings: headings });
+  }
+
+  window.previewmdPublishOutline = function (markdown) {
+    const headings = Array.from(article.querySelectorAll("h1,h2,h3,h4,h5,h6"))
+      .map((element, index) => {
+        element.id = "heading-" + index;
+        const anchor = element.querySelector(".heading-anchor");
+        if (anchor && anchor.getAttribute("href") !== "#" + element.id) {
+          anchor.href = "#" + element.id;
+        }
+        const content = element.cloneNode(true);
+        content.querySelectorAll(".heading-anchor, .katex-mathml").forEach((node) => node.remove());
+        return { id: element.id, level: Number(element.tagName.slice(1)), title: content.textContent.trim() };
+      });
+    publishOutline(markdown, headings);
+  };
+
   const tableExpandIcon =
     '<svg viewBox="0 0 16 16" aria-hidden="true">' +
     '<path d="M6.25 2.25h-4v4M2.5 2.5l4.1 4.1M9.75 13.75h4v-4M13.5 13.5l-4.1-4.1"/>' +
@@ -437,9 +488,28 @@
     button.innerHTML = expanded ? tableCollapseIcon : tableExpandIcon;
   }
 
-  window.addEventListener("resize", function () {
-    enhanceTables();
+  let tableRelayoutFrame = 0;
+  function scheduleTableRelayout() {
+    if (tableRelayoutFrame) return;
+    tableRelayoutFrame = window.requestAnimationFrame(function () {
+      tableRelayoutFrame = 0;
+      enhanceTables();
+    });
+  }
+  window.addEventListener("resize", scheduleTableRelayout);
+  // Width transitions continue beyond the first frame. Observe the column's
+  // actual width so the final layout is independent of the previous preset.
+  const observedTableWidths = new WeakMap();
+  const tableResizeObserver = new ResizeObserver((entries) => {
+    entries.forEach((entry) => {
+      const width = entry.contentRect.width;
+      if (observedTableWidths.get(entry.target) === width) return;
+      observedTableWidths.set(entry.target, width);
+      scheduleTableRelayout();
+    });
   });
+  tableResizeObserver.observe(article);
+  tableResizeObserver.observe(shell);
 
   function articleContentWidth() {
     const style = window.getComputedStyle(article);
@@ -480,16 +550,25 @@
     const readableColumnWidth = Math.max(144, computedCellWidth || 0);
     const expanded = wrapper.classList.contains("is-expanded");
     const contentWidth = articleContentWidth();
+    const viewport = wrapper.querySelector(".table-viewport");
+    // Classic scrollbars reserve inline space even without vertical overflow
+    // because the viewport uses scrollbar-gutter: stable. Overlay bars do not.
+    const scrollbarGutter = viewport ? Math.max(0, viewport.offsetWidth - viewport.clientWidth) : 0;
     const baseTableWidth = columnCount * readableColumnWidth;
-    const tableWidth = columnCount *
-      (expanded ? Math.max(220, readableColumnWidth) : readableColumnWidth);
-    const shouldUseWideSurface = expanded || baseTableWidth > contentWidth + 1;
+    const shouldUseWideSurface = expanded || baseTableWidth > contentWidth - scrollbarGutter + 1;
+    const surface = shouldUseWideSurface ? wideTableSurface() : null;
+    const surfaceWidth = surface ? Math.max(contentWidth, surface.width) : contentWidth;
+    const availableWidth = surface ? Math.max(0, surfaceWidth - surface.leadingGutter - scrollbarGutter) : contentWidth - scrollbarGutter;
+    // Use the free surface before introducing scroll, but keep the collapsed
+    // minimum so narrow windows never squeeze columns below their readable size.
+    const tableWidth = expanded
+      ? Math.max(baseTableWidth, Math.min(availableWidth, columnCount * Math.max(220, readableColumnWidth)))
+      : baseTableWidth;
 
     if (sizer) sizer.style.minWidth = tableWidth + "px";
     wrapper.classList.toggle("is-wide", shouldUseWideSurface);
     if (shouldUseWideSurface) {
-      const surface = wideTableSurface();
-      wrapper.style.width = Math.max(contentWidth, surface.width) + "px";
+      wrapper.style.width = surfaceWidth + "px";
       wrapper.style.marginLeft = -surface.leadingGutter + "px";
       wrapper.style.setProperty(
         "--table-leading-gutter",
@@ -1418,11 +1497,14 @@
     target && target.scrollIntoView({ behavior: "smooth", block: "start" });
   };
   window.previewmdSetLayout = function (readingWidth, paperCanvas, topInset, fluidWidth) {
+    if (lastRenderOptions) {
+      Object.assign(lastRenderOptions, { readingWidth, paperCanvas, topInset, readingWidthIsFluid: fluidWidth === true });
+    }
     root.dataset.paper = paperCanvas ? "true" : "false";
     root.dataset.width = fluidWidth ? "fluid" : "fixed";
     root.style.setProperty("--reading-width", readingWidth + "px");
     root.style.setProperty("--top-inset", (topInset || 0) + "px");
-    window.requestAnimationFrame(enhanceTables);
+    scheduleTableRelayout();
   };
 
   window.previewmdRender = async function (options) {
@@ -1459,6 +1541,7 @@
       );
       article.innerHTML =
         frontmatter.html + md.renderer.render(tokens, md.options, renderEnvironment);
+      publishOutline(options.markdown || "", outlineFromTokens(tokens), true);
       indexExternalChangeTargets(
         options.externalChanges || [],
         frontmatterChangeIndexes
@@ -1469,6 +1552,11 @@
       addHeadingAnchors();
       setCodeCopyHandlers();
       renderMath();
+      // Establish the new editor baseline before awaiting diagram work. A user
+      // can already type into the rebuilt DOM while those assets are rendering.
+      if (window.previewmdEditorDidRender) {
+        window.previewmdEditorDidRender(options.markdown || "", options.editable === true);
+      }
       await renderDiagrams(version, isDark);
 
       if (version !== renderVersion) return;
@@ -1476,9 +1564,6 @@
       findInDocument(activeSearchText);
       if (options.outlineTarget) {
         window.previewmdScrollTo(options.outlineTarget);
-      }
-      if (window.previewmdEditorDidRender) {
-        window.previewmdEditorDidRender(options.markdown || "", options.editable === true);
       }
       updateProgress();
     } catch (error) {
@@ -1495,8 +1580,12 @@
 
   window.previewmdPreparePrint = async function (options) {
     if (!lastRenderOptions) return;
-    printRestoreOptions = Object.assign({}, lastRenderOptions);
-    const printOptions = Object.assign({}, lastRenderOptions, {
+    const markdown = window.previewmdFlushEditor
+      ? window.previewmdFlushEditor()
+      : lastRenderOptions.markdown;
+    printRestoreOptions = Object.assign({}, lastRenderOptions, { markdown: markdown });
+    printRestoreViewport = { x: window.scrollX, y: window.scrollY };
+    const printOptions = Object.assign({}, printRestoreOptions, {
       editable: false,
       theme: options.theme || "light",
       readingStyle: options.style || "modern",
@@ -1627,7 +1716,10 @@
     root.style.removeProperty("--pdf-content-width");
     if (!printRestoreOptions) return;
     const restore = printRestoreOptions;
+    const viewport = printRestoreViewport;
     printRestoreOptions = null;
+    printRestoreViewport = null;
     await window.previewmdRender(restore);
+    if (viewport) window.scrollTo(viewport.x, viewport.y);
   };
 })();

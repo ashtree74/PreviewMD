@@ -5,7 +5,6 @@ project_dir="$(cd "$(dirname "$0")/.." && pwd)"
 app_dir="$project_dir/dist/PreviewMD.app"
 contents_dir="$app_dir/Contents"
 legal_dir="$contents_dir/Resources/Legal"
-build_dir="$project_dir/.build/apple/Products/Release"
 quicklook_dir="$contents_dir/PlugIns/PreviewMDQuickLook.appex"
 quicklook_contents_dir="$quicklook_dir/Contents"
 quicklook_build_dir="$project_dir/.build/quicklook"
@@ -20,11 +19,51 @@ export SDKROOT="${PREVIEWMD_SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
 export SWIFTPM_MODULECACHE_OVERRIDE="$project_dir/.build/ModuleCache"
 export CLANG_MODULE_CACHE_PATH="$project_dir/.build/ModuleCache"
 
-swift build \
-  -c release \
-  --arch arm64 \
-  --arch x86_64 \
-  --disable-sandbox
+sdk_version="$(plutil -extract Version raw -o - "$SDKROOT/SDKSettings.json")"
+# The deployment target and the linked SDK are different values. SwiftPM's
+# Swift Build backend can emit the deployment version as the SDK version,
+# making native controls adopt the legacy appearance on newer macOS releases.
+build_options=(
+  -c release --arch arm64 --arch x86_64 --disable-sandbox --sdk "$SDKROOT"
+)
+# Swift Build links through swiftc, which forwards -Xlinker itself. The older
+# Xcode backend puts these arguments directly into clang's OTHER_LDFLAGS.
+# Select the available backend explicitly and use its driver's flag syntax.
+swift_build_help="$(swift build --help)"
+if grep -Eq '^[[:space:]]+swiftbuild[[:space:]]' <<< "$swift_build_help"; then
+  build_options+=(
+    --build-system swiftbuild
+    -Xlinker -platform_version -Xlinker macos
+    -Xlinker 14.0 -Xlinker "$sdk_version"
+  )
+else
+  build_options+=(
+    --build-system xcode
+    -Xlinker "-Wl,-platform_version,macos,14.0,$sdk_version"
+  )
+fi
+
+verify_build_version() {
+  local executable_path="$1"
+  local architecture build_metadata actual_minos actual_sdk
+  for architecture in arm64 x86_64; do
+    lipo "$executable_path" -verify_arch "$architecture"
+    build_metadata="$(xcrun vtool -arch "$architecture" -show-build "$executable_path")"
+    actual_minos="$(awk '$1 == "minos" { print $2 }' <<< "$build_metadata")"
+    actual_sdk="$(awk '$1 == "sdk" { print $2 }' <<< "$build_metadata")"
+    if [[ "$actual_minos" != "14.0" || "$actual_sdk" != "$sdk_version" ]]; then
+      print -u2 "Invalid build version in $executable_path ($architecture): macOS $actual_minos, SDK $actual_sdk; expected macOS 14.0, SDK $sdk_version"
+      return 1
+    fi
+  done
+}
+
+swift build "${build_options[@]}"
+# SwiftPM's output directory differs between toolchain/build-system versions.
+# Ask the same build configuration instead of accidentally packaging an older
+# product left in .build/apple/Products/Release.
+build_dir="$(swift build "${build_options[@]}" --show-bin-path)"
+verify_build_version "$build_dir/PreviewMD"
 
 rm -rf "$app_dir" "$quicklook_build_dir"
 mkdir -p \
@@ -66,6 +105,7 @@ lipo -create \
   "$quicklook_build_dir/PreviewMDQuickLook-arm64" \
   "$quicklook_build_dir/PreviewMDQuickLook-x86_64" \
   -output "$quicklook_contents_dir/MacOS/PreviewMDQuickLook"
+verify_build_version "$quicklook_contents_dir/MacOS/PreviewMDQuickLook"
 chmod +x "$quicklook_contents_dir/MacOS/PreviewMDQuickLook"
 
 cp "scripts/QuickLook-Info.plist" "$quicklook_contents_dir/Info.plist"

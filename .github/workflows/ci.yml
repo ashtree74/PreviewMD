@@ -33,10 +33,19 @@ jobs:
       - name: Run landing-page tests
         run: python3 -m unittest discover -s site -p 'test_*.py'
 
+      - name: Run signup lifecycle tests
+        run: node --test Tests/Site/signup.test.cjs
+
       - name: Check scripts and property lists
         run: |
           zsh -n scripts/*.sh
           plutil -lint scripts/Info.plist scripts/QuickLook-Info.plist scripts/QuickLook.entitlements
+
+      - name: Verify the Universal 2 application bundle
+        run: |
+          ./scripts/build-app.sh
+          codesign --verify --deep --strict dist/PreviewMD.app
+          codesign --verify --strict dist/PreviewMD.app/Contents/PlugIns/PreviewMDQuickLook.appex
 
   dco:
     name: DCO sign-off

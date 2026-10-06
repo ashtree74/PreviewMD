@@ -1,0 +1,122 @@
+{
+  "baseRevision": "9b0cae993bfac779689ac9904bbe7727b580007d",
+  "lineMapUpdate": {
+    "maxMs": 0.4800558090209961,
+    "medianMs": 0.4620552062988281,
+    "p95Ms": 0.4800558090209961
+  },
+  "measurement": "Native insertion or WebKit insertText through document-state revision and the next native display pass; excludes physical screen presentation. WebKit insertion includes IPC. Inputs have a 60 ms pause for deferred work, excluded from timings.",
+  "phase": "main",
+  "readingStatisticsUpdate": {
+    "maxMs": 5.2269697189331055,
+    "medianMs": 4.8400163650512695,
+    "p95Ms": 5.2269697189331055
+  },
+  "results": [
+    {
+      "documentCommit": {
+        "maxMs": 28.130054473876953,
+        "medianMs": 26.88002586364746,
+        "p95Ms": 28.130054473876953
+      },
+      "documentCommitAndNativeDisplay": {
+        "maxMs": 81.51602745056152,
+        "medianMs": 65.67597389221191,
+        "p95Ms": 81.51602745056152
+      },
+      "fullPreviewRenders": 0,
+      "insertion": {
+        "maxMs": 28.120994567871094,
+        "medianMs": 26.874065399169922,
+        "p95Ms": 28.120994567871094
+      },
+      "mode": "source",
+      "readingStatisticsFromNativeText": {
+        "maxMs": 25.655031204223633,
+        "medianMs": 25.117993354797363,
+        "p95Ms": 25.655031204223633
+      },
+      "samples": 16
+    },
+    {
+      "documentCommit": {
+        "maxMs": 76.15196704864502,
+        "medianMs": 74.11801815032959,
+        "p95Ms": 76.15196704864502
+      },
+      "documentCommitAndNativeDisplay": {
+        "maxMs": 90.04902839660645,
+        "medianMs": 75.30200481414795,
+        "p95Ms": 90.04902839660645
+      },
+      "fullPreviewRenders": 0,
+      "insertion": {
+        "maxMs": 8.566975593566895,
+        "medianMs": 1.7139911651611328,
+        "p95Ms": 8.566975593566895
+      },
+      "mode": "preview",
+      "readingStatisticsFromNativeText": {},
+      "samples": 16
+    },
+    {
+      "documentCommit": {
+        "maxMs": 28.506040573120117,
+        "medianMs": 27.438998222351074,
+        "p95Ms": 28.506040573120117
+      },
+      "documentCommitAndNativeDisplay": {
+        "maxMs": 79.18298244476318,
+        "medianMs": 74.5999813079834,
+        "p95Ms": 79.18298244476318
+      },
+      "fullPreviewRenders": 16,
+      "insertion": {
+        "maxMs": 28.501033782958984,
+        "medianMs": 27.433037757873535,
+        "p95Ms": 28.501033782958984
+      },
+      "mode": "split-source",
+      "readingStatisticsFromNativeText": {
+        "maxMs": 25.5889892578125,
+        "medianMs": 24.873018264770508,
+        "p95Ms": 25.5889892578125
+      },
+      "samples": 16
+    },
+    {
+      "documentCommit": {
+        "maxMs": 75.09100437164307,
+        "medianMs": 74.12803173065186,
+        "p95Ms": 75.09100437164307
+      },
+      "documentCommitAndNativeDisplay": {
+        "maxMs": 88.98603916168213,
+        "medianMs": 75.83105564117432,
+        "p95Ms": 88.98603916168213
+      },
+      "fullPreviewRenders": 0,
+      "insertion": {
+        "maxMs": 9.679913520812988,
+        "medianMs": 1.7130374908447266,
+        "p95Ms": 9.679913520812988
+      },
+      "mode": "split-preview",
+      "readingStatisticsFromNativeText": {},
+      "samples": 16
+    }
+  ],
+  "sampleSHA256": "5dcf69360c09ff74635569eb1fd3551245c14c930be173deb064929f0cf51430",
+  "sampleUTF16Units": 126669,
+  "sampleUTF8Bytes": 126669,
+  "stateUpdateWithoutViews": {
+    "maxMs": 4.896044731140137,
+    "medianMs": 4.719018936157227,
+    "p95Ms": 4.896044731140137
+  },
+  "system": "Version 27.0 (Build 26A428)",
+  "window": {
+    "height": 760,
+    "width": 1200
+  }
+}

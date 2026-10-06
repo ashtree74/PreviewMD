@@ -10,30 +10,50 @@ import WebKit
 final class RendererController: ObservableObject {
     private weak var webView: WKWebView?
     private var attachedDocumentID: UUID?
+    private var isEditorVisible = true
+    private var synchronizeRenderer: (@MainActor () async throws -> Void)?
     // PDFKit's print operation can hand work to Quartz after `run()` returns.
     // Retain the immutable source and operation until a later print replaces them.
     private var activePrintDocument: PDFDocument?
     private var activePrintOperation: NSPrintOperation?
 
-    func attach(_ webView: WKWebView, documentID: UUID) {
+    func attach(
+        _ webView: WKWebView,
+        documentID: UUID,
+        isVisible: Bool = true,
+        synchronize: (@MainActor () async throws -> Void)? = nil
+    ) {
         self.webView = webView
         attachedDocumentID = documentID
+        isEditorVisible = isVisible
+        synchronizeRenderer = synchronize
     }
 
     func flushMarkdown(
         for documentID: UUID,
         completion: @escaping (String?) -> Void
     ) {
-        guard let webView, attachedDocumentID == documentID else {
+        guard isEditorVisible, let webView, attachedDocumentID == documentID else {
             completion(nil)
             return
         }
 
-        webView.evaluateJavaScript(
-            "window.previewmdFlushEditor ? window.previewmdFlushEditor() : null"
-        ) { result, _ in
-            Task { @MainActor in
+        let synchronize = synchronizeRenderer
+        Task { @MainActor [weak self, weak webView] in
+            do {
+                try await synchronize?()
+                guard let self, let webView, self.isEditorVisible,
+                      self.webView === webView, self.attachedDocumentID == documentID
+                else { completion(nil); return }
+                let result = try await webView.evaluateJavaScript(
+                    "window.previewmdFlushEditor ? window.previewmdFlushEditor() : null"
+                )
+                guard self.isEditorVisible, self.webView === webView,
+                      self.attachedDocumentID == documentID
+                else { completion(nil); return }
                 completion(result as? String)
+            } catch {
+                completion(nil)
             }
         }
     }
@@ -51,20 +71,22 @@ final class RendererController: ObservableObject {
             NSSound.beep()
             return
         }
-        webView.callAsyncJavaScript(
-            "return window.previewmdAdvancedCopy && window.previewmdAdvancedCopy(destination, suggestedName);",
-            arguments: [
-                "destination": format.rawValue,
-                "suggestedName": suggestedName,
-            ],
-            in: nil,
-            in: .page
-        ) { result in
-            guard case let .success(value) = result,
-                  (value as? Bool) == true
-            else {
+        let synchronize = synchronizeRenderer
+        let documentID = attachedDocumentID
+        Task { @MainActor [weak self, weak webView] in
+            do {
+                try await synchronize?()
+                guard let self, let webView, self.webView === webView,
+                      self.attachedDocumentID == documentID
+                else { return }
+                let value = try await webView.callAsyncJavaScript(
+                    "return window.previewmdAdvancedCopy && window.previewmdAdvancedCopy(destination, suggestedName);",
+                    arguments: ["destination": format.rawValue, "suggestedName": suggestedName],
+                    contentWorld: .page
+                )
+                if (value as? Bool) != true { NSSound.beep() }
+            } catch {
                 NSSound.beep()
-                return
             }
         }
     }
@@ -74,17 +96,22 @@ final class RendererController: ObservableObject {
             NSSound.beep()
             return
         }
-        webView.callAsyncJavaScript(
-            "return window.previewmdExportDOCX && window.previewmdExportDOCX(suggestedName);",
-            arguments: ["suggestedName": suggestedName],
-            in: nil,
-            in: .page
-        ) { result in
-            guard case let .success(value) = result,
-                  (value as? Bool) == true
-            else {
+        let synchronize = synchronizeRenderer
+        let documentID = attachedDocumentID
+        Task { @MainActor [weak self, weak webView] in
+            do {
+                try await synchronize?()
+                guard let self, let webView, self.webView === webView,
+                      self.attachedDocumentID == documentID
+                else { return }
+                let value = try await webView.callAsyncJavaScript(
+                    "return window.previewmdExportDOCX && window.previewmdExportDOCX(suggestedName);",
+                    arguments: ["suggestedName": suggestedName],
+                    contentWorld: .page
+                )
+                if (value as? Bool) != true { NSSound.beep() }
+            } catch {
                 NSSound.beep()
-                return
             }
         }
     }
@@ -194,7 +221,20 @@ final class RendererController: ObservableObject {
             return
         }
 
-        Task { @MainActor [weak webView] in
+        let synchronize = synchronizeRenderer
+        let documentID = attachedDocumentID
+        Task { @MainActor [weak self, weak webView] in
+            do {
+                try await synchronize?()
+            } catch {
+                completion(.failure(error))
+                return
+            }
+            guard let self, self.attachedDocumentID == documentID,
+                  self.webView === webView else {
+                completion(.failure(RendererError.rendererUnavailable))
+                return
+            }
             guard let webView else {
                 completion(.failure(RendererError.rendererUnavailable))
                 return
@@ -668,6 +708,7 @@ struct MarkdownWebView: NSViewRepresentable {
     let controller: RendererController
     let splitSynchronizer: SplitEditorSynchronizer
     let isSplitSynchronizationEnabled: Bool
+    var isVisible = true
     let onContentChange: (UUID, String, Bool) -> Void
     let onDropFiles: ([URL]) -> Void
     let onDropTargeted: (Bool) -> Void
@@ -682,7 +723,9 @@ struct MarkdownWebView: NSViewRepresentable {
             openMarkdown: state.open(url:),
             onContentChange: onContentChange,
             splitSynchronizer: splitSynchronizer,
-            isSplitSynchronizationEnabled: isSplitSynchronizationEnabled
+            isSplitSynchronizationEnabled: isSplitSynchronizationEnabled,
+            isVisible: isVisible,
+            onOutlineChange: state.updateOutline
         )
     }
 
@@ -717,6 +760,7 @@ struct MarkdownWebView: NSViewRepresentable {
         configuration.userContentController.add(context.coordinator, name: "editorChange")
         configuration.userContentController.add(context.coordinator, name: "pickImage")
         configuration.userContentController.add(context.coordinator, name: "splitSync")
+        configuration.userContentController.add(context.coordinator, name: "outlineChange")
         configuration.setURLSchemeHandler(
             context.coordinator.localImageSchemeHandler,
             forURLScheme: LocalImageSchemeHandler.scheme
@@ -734,7 +778,10 @@ struct MarkdownWebView: NSViewRepresentable {
             context.coordinator,
             documentID: documentID
         )
-        controller.attach(webView, documentID: documentID)
+        controller.attach(webView, documentID: documentID, isVisible: isVisible) { [weak coordinator = context.coordinator] in
+            guard let coordinator else { throw CancellationError() }
+            try await coordinator.prepareForOutput()
+        }
         let initialPayload = renderPayload
         webView.pageZoom = initialPayload.zoom
         context.coordinator.loadShell(
@@ -746,12 +793,17 @@ struct MarkdownWebView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
-        controller.attach(webView, documentID: documentID)
+        controller.attach(webView, documentID: documentID, isVisible: isVisible) { [weak coordinator = context.coordinator] in
+            guard let coordinator else { throw CancellationError() }
+            try await coordinator.prepareForOutput()
+        }
         context.coordinator.documentID = documentID
         context.coordinator.documentURL = documentURL
         context.coordinator.localImageSchemeHandler.updateBaseURL(baseURL)
         context.coordinator.openMarkdown = state.open(url:)
         context.coordinator.onContentChange = onContentChange
+        context.coordinator.onOutlineChange = state.updateOutline
+        context.coordinator.isVisible = isVisible
         context.coordinator.updateSynchronization(
             splitSynchronizer: splitSynchronizer,
             isEnabled: isSplitSynchronizationEnabled
@@ -780,6 +832,9 @@ struct MarkdownWebView: NSViewRepresentable {
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "editorChange")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "pickImage")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "splitSync")
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "outlineChange")
+        coordinator.outlineTask?.cancel()
+        coordinator.renderTask?.cancel()
         coordinator.splitSynchronizer?.detachPreview(coordinator)
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
@@ -909,6 +964,19 @@ struct MarkdownWebView: NSViewRepresentable {
         var documentURL: URL?
         var openMarkdown: (URL) -> Void
         var onContentChange: (UUID, String, Bool) -> Void
+        var onOutlineChange: ([OutlineHeading], UUID, String) -> Void
+        var isVisible: Bool
+        fileprivate var outlineTask: Task<Void, Never>?
+        fileprivate var renderTask: Task<Void, any Error>?
+        private var renderGeneration = 0
+
+        private enum OutputPreparationError: LocalizedError {
+            case previewNotReady
+
+            var errorDescription: String? {
+                "The document preview did not finish loading."
+            }
+        }
         weak var splitSynchronizer: SplitEditorSynchronizer?
         var isSplitSynchronizationEnabled: Bool
         var basePath = ""
@@ -958,7 +1026,9 @@ struct MarkdownWebView: NSViewRepresentable {
             openMarkdown: @escaping (URL) -> Void,
             onContentChange: @escaping (UUID, String, Bool) -> Void,
             splitSynchronizer: SplitEditorSynchronizer,
-            isSplitSynchronizationEnabled: Bool
+            isSplitSynchronizationEnabled: Bool,
+            isVisible: Bool = true,
+            onOutlineChange: @escaping ([OutlineHeading], UUID, String) -> Void = { _, _, _ in }
         ) {
             self.documentID = documentID
             self.documentURL = documentURL
@@ -966,6 +1036,8 @@ struct MarkdownWebView: NSViewRepresentable {
             self.onContentChange = onContentChange
             self.splitSynchronizer = splitSynchronizer
             self.isSplitSynchronizationEnabled = isSplitSynchronizationEnabled
+            self.isVisible = isVisible
+            self.onOutlineChange = onOutlineChange
             self.localImageSchemeHandler = LocalImageSchemeHandler(
                 baseURL: documentURL?.deletingLastPathComponent()
                     ?? Bundle.module.resourceURL
@@ -984,6 +1056,11 @@ struct MarkdownWebView: NSViewRepresentable {
             }
             self.splitSynchronizer = splitSynchronizer
             isSplitSynchronizationEnabled = isEnabled
+            if wasEnabled != isEnabled, isLoaded {
+                webView?.evaluateJavaScript(
+                    "window.previewmdSetSplitSynchronizationEnabled && window.previewmdSetSplitSynchronizationEnabled(\(isEnabled));"
+                )
+            }
             if wasEnabled && !isEnabled, isLoaded {
                 webView?.evaluateJavaScript(
                     "window.previewmdClearSplitSynchronization && "
@@ -998,6 +1075,9 @@ struct MarkdownWebView: NSViewRepresentable {
             initialPayload: RenderPayload,
             in webView: WKWebView
         ) {
+            renderTask?.cancel()
+            renderTask = nil
+            renderGeneration += 1
             basePath = baseURL.path
             localImageSchemeHandler.updateBaseURL(baseURL)
             isLoaded = false
@@ -1011,7 +1091,7 @@ struct MarkdownWebView: NSViewRepresentable {
         }
 
         func update(_ payload: RenderPayload, in webView: WKWebView) {
-            guard payload != lastPayload else { return }
+            guard payload != lastPayload || pendingPayload != nil else { return }
             pendingPayload = payload
             guard isLoaded else { return }
             applyPendingPayload(in: webView)
@@ -1019,6 +1099,9 @@ struct MarkdownWebView: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation?) {
             isLoaded = true
+            webView.evaluateJavaScript(
+                "window.previewmdSetSplitSynchronizationEnabled && window.previewmdSetSplitSynchronizationEnabled(\(isSplitSynchronizationEnabled));"
+            )
             applyPendingPayload(in: webView)
         }
 
@@ -1109,6 +1192,12 @@ struct MarkdownWebView: NSViewRepresentable {
                     presentImagePicker(in: webView)
                 case "splitSync":
                     receiveSplitSyncMessage(message.body)
+                case "outlineChange":
+                    guard let body = message.body as? [String: Any],
+                          let markdown = body["markdown"] as? String,
+                          let headings = Self.outlineHeadings(body["headings"])
+                    else { return }
+                    onOutlineChange(headings, documentID, markdown)
                 default:
                     break
                 }
@@ -1668,8 +1757,37 @@ struct MarkdownWebView: NSViewRepresentable {
                 ?? relativePath
         }
 
-        private func applyPendingPayload(in webView: WKWebView) {
+        func prepareForOutput() async throws {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+            while !isLoaded {
+                guard ContinuousClock.now < deadline else {
+                    throw OutputPreparationError.previewNotReady
+                }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            guard let webView else { throw CancellationError() }
+            while true {
+                if let task = renderTask {
+                    try await task.value
+                    continue
+                }
+                guard pendingPayload != nil else { return }
+                applyPendingPayload(in: webView, forceRender: true)
+            }
+        }
+
+        private func applyPendingPayload(in webView: WKWebView, forceRender: Bool = false) {
             guard let payload = pendingPayload else { return }
+
+            guard isVisible || forceRender else {
+                scheduleHiddenOutline(for: payload, in: webView)
+                return
+            }
+            // Keep the latest payload queued until the current render finishes,
+            // including its asynchronous diagrams and layout work.
+            guard renderTask == nil else { return }
+            outlineTask?.cancel()
+            outlineTask = nil
 
             pendingPayload = nil
             webView.pageZoom = payload.zoom
@@ -1736,7 +1854,66 @@ struct MarkdownWebView: NSViewRepresentable {
             lastPayload = payload
             lastEditorMarkdown = nil
             lastEditorDocumentID = nil
-            webView.evaluateJavaScript("window.previewmdRender(\(json));")
+            renderGeneration += 1
+            let generation = renderGeneration
+            renderTask = Task { @MainActor [weak self, weak webView] in
+                guard let self, let webView else { throw CancellationError() }
+                do {
+                    try Task.checkCancellation()
+                    _ = try await webView.callAsyncJavaScript(
+                        "await window.previewmdRender(\(json)); return true;",
+                        arguments: [:],
+                        contentWorld: .page
+                    )
+                    try Task.checkCancellation()
+                } catch {
+                    if self.renderGeneration == generation {
+                        self.renderTask = nil
+                        self.lastPayload = nil
+                        if self.pendingPayload == nil { self.pendingPayload = payload }
+                    }
+                    throw error
+                }
+                guard self.renderGeneration == generation else { return }
+                self.renderTask = nil
+                if self.isVisible { self.applyPendingPayload(in: webView) }
+            }
+        }
+
+        private func scheduleHiddenOutline(for payload: RenderPayload, in webView: WKWebView) {
+            outlineTask?.cancel()
+            outlineTask = Task { @MainActor [weak self, weak webView] in
+                do {
+                    try await Task.sleep(for: .milliseconds(100))
+                    guard let self, let webView, !self.isVisible,
+                          self.pendingPayload == payload else { return }
+                    let result = try await webView.callAsyncJavaScript(
+                        "return window.previewmdOutlineForMarkdown(markdown);",
+                        arguments: ["markdown": payload.markdown],
+                        contentWorld: .page
+                    )
+                    guard !Task.isCancelled, !self.isVisible,
+                          self.pendingPayload == payload,
+                          let headings = Self.outlineHeadings(result) else { return }
+                    self.onOutlineChange(headings, self.documentID, payload.markdown)
+                } catch {
+                    // A hidden outline refresh is superseded by newer edits or
+                    // the full render when the preview becomes visible.
+                }
+            }
+        }
+
+        private static func outlineHeadings(_ value: Any?) -> [OutlineHeading]? {
+            guard let entries = value as? [[String: Any]] else { return nil }
+            var headings: [OutlineHeading] = []
+            for entry in entries {
+                guard let id = entry["id"] as? String,
+                      let level = entry["level"] as? Int,
+                      (1...6).contains(level), let title = entry["title"] as? String
+                else { return nil }
+                headings.append(OutlineHeading(id: id, level: level, title: title))
+            }
+            return headings
         }
 
         private func javaScriptJSON<T: Encodable>(_ value: T) -> String? {

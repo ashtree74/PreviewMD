@@ -7,7 +7,7 @@
    below only fixes up the live DOM — no-JS visitors, crawlers
    and the pre-JS paint read index.html as shipped.
    ============================================================ */
-const DOWNLOAD_FILE = "PreviewMD-1.7-11-macOS.dmg";
+const DOWNLOAD_FILE = "PreviewMD-1.8-12-macOS.dmg";
 /* Document-relative on purpose: the page is served from the site root in local
    development and from a /<slug>/ subpath in production. A leading slash would
    miss the proxied endpoint there. */
@@ -275,20 +275,17 @@ const notifyForm = $("#notifyForm");
 const emailInput = $("#emailInput");
 const signupButton = notifyForm.querySelector('[type="submit"]');
 const liveStatus = $("#liveStatus");
+const cardTitle = $("#emailTitle");
+let signupRequest = null;
+let successTimer = null;
+let cardGeneration = 0;
 
-function showCard() {
-  if (card.open) return;
-  card.showModal(); // native <dialog>: focus trap, Escape and backdrop for free
-  liveStatus.textContent = "An optional PreviewMD updates signup appeared.";
-}
-
-function dismissCard() {
-  if (card.open) card.close();
-}
-
-/* Reset the form after every close so the modal is ready to open again.
-   The dialog returns focus to the triggering link by itself. */
-card.addEventListener("close", () => {
+function resetCard() {
+  cardGeneration += 1;
+  signupRequest?.abort();
+  signupRequest = null;
+  clearTimeout(successTimer);
+  successTimer = null;
   liveStatus.textContent = "";
   cardMain.hidden = false;
   cardSuccess.hidden = true;
@@ -296,6 +293,27 @@ card.addEventListener("close", () => {
   notifyForm.reset();
   signupButton.disabled = false;
   signupButton.textContent = "Keep me posted";
+}
+
+function showCard() {
+  if (card.open) return;
+  resetCard();
+  card.showModal(); // native <dialog>: focus trap, Escape and backdrop for free
+  cardTitle.focus({ preventScroll: true });
+  liveStatus.textContent = "An optional PreviewMD updates signup appeared.";
+}
+
+function dismissCard() {
+  if (!card.open) return;
+  card.close();
+  resetCard();
+}
+
+/* Reset the form after every close so the modal is ready to open again.
+   The dialog returns focus to the triggering link by itself. */
+card.addEventListener("close", () => {
+  // A queued close event may arrive after the next download reopens the sheet.
+  if (!card.open) resetCard();
 });
 
 /* classic modal affordance: clicking the dimmed backdrop closes it
@@ -332,36 +350,49 @@ $$("[data-download]").forEach((link) => {
   });
 });
 
-const showSignupSuccess = () => {
+const showSignupSuccess = (generation) => {
   cardMain.hidden = true;
   cardSuccess.hidden = false; // role="status" announces it
   card.focus({ preventScroll: true }); // focus was on the hidden button
-  setTimeout(dismissCard, 1800); // linger, then let the reader go
+  successTimer = setTimeout(() => {
+    if (card.open && generation === cardGeneration) dismissCard();
+  }, 1800); // linger, then let the reader go
 };
 
 notifyForm.addEventListener("submit", (e) => {
   e.preventDefault();
+  if (!card.open || signupRequest) return;
   const email = emailInput.value.trim();
   if (!email || !emailInput.checkValidity()) { emailInput.reportValidity(); return; }
   cardError.hidden = true;
   signupButton.disabled = true;
   signupButton.textContent = "Saving…";
+  const request = new AbortController();
+  const generation = cardGeneration;
+  signupRequest = request;
+  const isCurrentRequest = () =>
+    card.open && generation === cardGeneration && signupRequest === request;
 
   fetch(NEWSLETTER_ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "same-origin",
-    body: JSON.stringify({ email })
+    body: JSON.stringify({ email }),
+    signal: request.signal
   })
     .then((r) => {
+      if (!isCurrentRequest()) return;
       if (!r.ok) throw new Error("HTTP " + r.status);
-      showSignupSuccess();
+      showSignupSuccess(generation);
     })
     .catch((err) => {
+      if (!isCurrentRequest()) return;
       console.warn("PreviewMD: newsletter signup failed —", err);
       cardError.hidden = false; // keep the form so retry is possible
     })
     .finally(() => {
+      if (!isCurrentRequest()) return;
+      signupRequest = null;
       signupButton.disabled = false;
       signupButton.textContent = "Keep me posted";
     });
