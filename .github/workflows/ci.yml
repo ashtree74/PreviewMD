@@ -41,6 +41,12 @@ jobs:
           zsh -n scripts/*.sh
           plutil -lint scripts/Info.plist scripts/QuickLook-Info.plist scripts/QuickLook.entitlements
 
+      - name: Verify the Universal 2 application bundle
+        run: |
+          ./scripts/build-app.sh
+          codesign --verify --deep --strict dist/PreviewMD.app
+          codesign --verify --strict dist/PreviewMD.app/Contents/PlugIns/PreviewMDQuickLook.appex
+
   dco:
     name: DCO sign-off
     if: github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]'

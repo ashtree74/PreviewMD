@@ -19,15 +19,37 @@ export SDKROOT="${PREVIEWMD_SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
 export SWIFTPM_MODULECACHE_OVERRIDE="$project_dir/.build/ModuleCache"
 export CLANG_MODULE_CACHE_PATH="$project_dir/.build/ModuleCache"
 
-build_options=(-c release --arch arm64 --arch x86_64 --disable-sandbox)
+sdk_version="$(plutil -extract Version raw -o - "$SDKROOT/SDKSettings.json")"
+# The deployment target and the linked SDK are different values. SwiftPM's
+# Swift Build backend can emit the deployment version as the SDK version,
+# making native controls adopt the legacy appearance on newer macOS releases.
+build_options=(
+  -c release --arch arm64 --arch x86_64 --disable-sandbox --sdk "$SDKROOT"
+  -Xlinker -platform_version -Xlinker macos
+  -Xlinker 14.0 -Xlinker "$sdk_version"
+)
+
+verify_build_version() {
+  local executable_path="$1"
+  local architecture build_metadata actual_minos actual_sdk
+  for architecture in arm64 x86_64; do
+    lipo "$executable_path" -verify_arch "$architecture"
+    build_metadata="$(xcrun vtool -arch "$architecture" -show-build "$executable_path")"
+    actual_minos="$(awk '$1 == "minos" { print $2 }' <<< "$build_metadata")"
+    actual_sdk="$(awk '$1 == "sdk" { print $2 }' <<< "$build_metadata")"
+    if [[ "$actual_minos" != "14.0" || "$actual_sdk" != "$sdk_version" ]]; then
+      print -u2 "Invalid build version in $executable_path ($architecture): macOS $actual_minos, SDK $actual_sdk; expected macOS 14.0, SDK $sdk_version"
+      return 1
+    fi
+  done
+}
+
 swift build "${build_options[@]}"
 # SwiftPM's output directory differs between toolchain/build-system versions.
 # Ask the same build configuration instead of accidentally packaging an older
 # product left in .build/apple/Products/Release.
 build_dir="$(swift build "${build_options[@]}" --show-bin-path)"
-for architecture in arm64 x86_64; do
-  lipo "$build_dir/PreviewMD" -verify_arch "$architecture"
-done
+verify_build_version "$build_dir/PreviewMD"
 
 rm -rf "$app_dir" "$quicklook_build_dir"
 mkdir -p \
@@ -69,6 +91,7 @@ lipo -create \
   "$quicklook_build_dir/PreviewMDQuickLook-arm64" \
   "$quicklook_build_dir/PreviewMDQuickLook-x86_64" \
   -output "$quicklook_contents_dir/MacOS/PreviewMDQuickLook"
+verify_build_version "$quicklook_contents_dir/MacOS/PreviewMDQuickLook"
 chmod +x "$quicklook_contents_dir/MacOS/PreviewMDQuickLook"
 
 cp "scripts/QuickLook-Info.plist" "$quicklook_contents_dir/Info.plist"

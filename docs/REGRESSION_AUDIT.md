@@ -15,7 +15,7 @@ covered by a focused regression rather than a snapshot of the implementation.
 | Missing folders repeatedly opened background error dialogs | Keep a recoverable inline folder status; automatic checks avoid modal alerts. Tests cover disappearance and recovery. |
 | DOCX ordered lists ignored starts and independent restarts | Give each list its own numbering instance and level-specific start override. `DOCXDocumentWriterTests` inspects document and numbering XML, including nested lists and zero starts. |
 | A previous signup request or timer changed a reopened form | Abort requests, guard generations, cancel timers, and reset on dismissal. `Tests/Site/signup.test.cjs` exercises delayed success/failure and queued native close events against the actual signup code. |
-| Packaging could copy an old product after a successful build with a newer SwiftPM | Ask SwiftPM for the output directory with the same build options and verify both architectures before packaging. The complete bundle smoke check verifies the current resources and behavior. |
+| Packaging could copy an old product after a successful build with a newer SwiftPM | Ask SwiftPM for the output directory with the same build options and verify both architectures before packaging. Also keep the linked SDK separate from the deployment target and validate both in each executable slice. CI builds and verifies the complete bundle. |
 
 ## GitHub reports
 
@@ -85,11 +85,37 @@ Verified locally on October 6, 2026:
 - Live site checks covered download-triggered signup, static initial focus,
   visible keyboard focus, and clean dismissal/reopening.
 
-Visual evidence uses disposable test content:
+Visual evidence uses disposable test content. The folder-status capture below
+predates the SDK correction described next; the corrected native-layout capture
+shows the final appearance.
 
 ![Recoverable folder status](../assets/screenshots/previewmd-folder-unavailable.png)
 
 ![Signup initial focus](../assets/screenshots/previewmd-signup-focus.png)
+
+## Native appearance regression caught after the audit
+
+The first current-product bundle had `minOS 14.0 / SDK 14.0` in both application
+slices, while the previous installed application had `minOS 14.0 / SDK 26.5`.
+Its source was compiled with SDK 27.0, but Swift Build's isolated linker
+environment emitted the deployment version as the linked SDK. This changed
+native sidebar/toolbar styling and stretched the reading-width panel across
+the preview. Sidebar controls and the panel's view code had not changed.
+
+The build now passes the selected SDK explicitly and supplies the complete
+linker platform tuple: macOS, minimum 14.0, and the selected SDK version. It
+validates `LC_BUILD_VERSION` plus both architectures before replacing the
+application and after building Quick Look. The selected SDK version comes from
+its own metadata, including when `PREVIEWMD_SDKROOT` is supplied.
+
+The rebuilt application and extension both report `minOS 14.0 / SDK 27.0` and
+pass strict signature verification. Live comparison confirms the system
+sidebar/toolbar appearance and compact centered reading-width panel are
+restored, including Focus entry and Escape restoration. Apple describes this
+SDK-dependent adoption of native appearance in
+[Adopting Liquid Glass](https://developer.apple.com/documentation/technologyoverviews/adopting-liquid-glass).
+
+![Restored native layout](../assets/screenshots/previewmd-native-layout.png)
 
 ## Follow-up order
 
