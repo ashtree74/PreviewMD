@@ -627,6 +627,7 @@ code {
 
 .table-scroll.is-wide .table-sizer {
   margin-left: var(--table-leading-gutter, 0px);
+  width: calc(100% - var(--table-leading-gutter, 0px));
 }
 
 .table-scroll.is-wide > .table-expand,
