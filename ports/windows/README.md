@@ -36,4 +36,4 @@ The shell calls `window.previewmdRender` with the same field names as the macOS 
 
 ## What the slice leaves out
 
-Tabs, editing, drag and drop, the Jump List, reading-width controls, focus mode, file watching, PDF, DOCX, signing, and the Store. Quick Look, the macOS toolbar, and Universal 2 stay on the Mac.
+Tabs, editing, reading-width controls, focus mode, file watching, PDF, DOCX, signing, and the Store. Quick Look, the macOS toolbar, and Universal 2 stay on the Mac.
