@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""Rewrite ports/windows/renderer.sha256 from Git blob bytes.
-
-The manifest must match a checkout of Sources/PreviewMD/Resources/Renderer.
-This script refuses to pin a work tree whose bytes differ from HEAD, which
-is what happens when a Windows checkout has rewritten text files to CRLF.
-"""
 
 import hashlib
 import subprocess

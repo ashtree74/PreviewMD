@@ -1,5 +1,3 @@
-# ports/windows/renderer.sha256 hashes Git blob bytes.
-# eol=lf keeps a Windows checkout from rewriting those text files to CRLF.
 Sources/PreviewMD/Resources/Renderer/**/*.js text eol=lf
 Sources/PreviewMD/Resources/Renderer/**/*.css text eol=lf
 Sources/PreviewMD/Resources/Renderer/**/*.md text eol=lf
