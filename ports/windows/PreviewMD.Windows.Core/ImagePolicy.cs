@@ -49,12 +49,16 @@ public static class ImagePolicy
         {
             var rootFull = Path.GetFullPath(imageRoot);
             fullPath = Resolve(source, rootFull);
-            var rootPrefix = rootFull.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-                + Path.DirectorySeparatorChar;
-            if (!fullPath.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase))
+            if (!IsInside(rootFull, fullPath))
                 return new ImageDecision.Refused(ImageRefusal.EscapesJail);
+
+            var canonicalRoot = Canonicalize(rootFull);
+            var canonicalPath = Canonicalize(fullPath);
+            if (!IsInside(canonicalRoot, canonicalPath))
+                return new ImageDecision.Refused(ImageRefusal.EscapesJail);
+            fullPath = canonicalPath;
         }
-        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException or IOException)
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException or IOException or UnauthorizedAccessException)
         {
             return new ImageDecision.Refused(ImageRefusal.InvalidRequest);
         }
@@ -73,6 +77,49 @@ public static class ImagePolicy
             return new ImageDecision.Refused(ImageRefusal.FileTooLarge);
 
         return new ImageDecision.Allowed(fullPath);
+    }
+
+    private static bool IsInside(string rootFull, string candidate)
+    {
+        var rootPrefix = rootFull.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+        return candidate.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string Canonicalize(string fullPath)
+    {
+        fullPath = Path.GetFullPath(fullPath);
+        var root = Path.GetPathRoot(fullPath);
+        if (string.IsNullOrEmpty(root))
+            throw new IOException("The path has no root.");
+
+        var current = FollowLink(root);
+        var relative = Path.GetRelativePath(root, fullPath);
+        if (relative == ".")
+            return current;
+
+        foreach (var segment in relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+        {
+            if (segment.Length == 0 || segment == ".")
+                continue;
+            current = FollowLink(Path.Combine(current, segment));
+        }
+
+        return current;
+    }
+
+    private static string FollowLink(string path)
+    {
+        FileSystemInfo? link = null;
+        if (Directory.Exists(path))
+            link = Directory.ResolveLinkTarget(path, returnFinalTarget: true);
+        else if (File.Exists(path))
+            link = File.ResolveLinkTarget(path, returnFinalTarget: true);
+
+        if (link is null || link.FullName.Length == 0)
+            return Path.GetFullPath(path);
+
+        return Path.GetFullPath(link.FullName);
     }
 
     private static string Resolve(string source, string rootFull)

@@ -88,13 +88,22 @@ public class ImagePolicyTests
             var absoluteEscape = ImagePolicy.Decide(outside, notes.FullName, ImageInspection.Read);
             Assert.Equal(new ImageDecision.Refused(ImageRefusal.EscapesJail), absoluteEscape);
 
-            CreateFileLink(fileLink, outside);
-            var fileEscape = ImagePolicy.Decide("img/escape.png", notes.FullName, ImageInspection.Read);
-            Assert.Equal(new ImageDecision.Refused(ImageRefusal.EscapesJail), fileEscape);
-
             CreateDirectoryLink(directoryLink, parent.FullName);
             var directoryEscape = ImagePolicy.Decide("out/secret.png", notes.FullName, ImageInspection.Read);
             Assert.Equal(new ImageDecision.Refused(ImageRefusal.EscapesJail), directoryEscape);
+
+            if (TryCreateFileLink(fileLink, outside))
+            {
+                var fileEscape = ImagePolicy.Decide("img/escape.png", notes.FullName, ImageInspection.Read);
+                Assert.Equal(new ImageDecision.Refused(ImageRefusal.EscapesJail), fileEscape);
+
+                var alias = Path.Combine(notes.FullName, "alias.png");
+                Assert.True(TryCreateFileLink(alias, picture));
+                var aliased = ImagePolicy.Decide("alias.png", notes.FullName, ImageInspection.Read);
+                var aliasPath = Assert.IsType<ImageDecision.Allowed>(aliased);
+                Assert.Equal(png, File.ReadAllBytes(aliasPath.Path));
+                RemoveLink(alias);
+            }
         }
         finally
         {
@@ -104,9 +113,17 @@ public class ImagePolicyTests
         }
     }
 
-    private static void CreateFileLink(string linkPath, string targetPath)
+    private static bool TryCreateFileLink(string linkPath, string targetPath)
     {
-        File.CreateSymbolicLink(linkPath, targetPath);
+        try
+        {
+            File.CreateSymbolicLink(linkPath, targetPath);
+            return true;
+        }
+        catch (IOException) when (OperatingSystem.IsWindows())
+        {
+            return false;
+        }
     }
 
     private static void CreateDirectoryLink(string linkPath, string targetPath)

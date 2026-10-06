@@ -32,10 +32,8 @@ An unpackaged build copies the Windows App SDK next to the executable, so `dotne
 
 The renderer in `Sources/PreviewMD/Resources/Renderer/` is copied unchanged. `ports/windows/renderer.sha256` pins every file to the Git blob bytes. Text files in that folder check out as LF, so a Windows checkout does not rewrite them to CRLF before the hash. Regenerate the pin with `python3 ports/windows/pin-renderer.py`. The script refuses a work tree whose bytes differ from HEAD. The build fails when the source tree or the copy disagrees with that list.
 
-The shell calls `window.previewmdRender` with the same field names as the macOS app. Relative images use `previewmd-local-image`. The shell serves a file only when the path stays inside the open document's folder, the file is an image, and it is at most 100 MB. `http`, `https`, and `mailto` links open with `Launcher.LaunchUriAsync`. They do not render inside the window.
+The shell calls `window.previewmdRender` with the same field names as the macOS app. Relative images use `previewmd-local-image`. The shell serves a file only when its path, after a symbolic link or directory junction is followed, stays inside the open document's folder. The file must be an image of at most 100 MB. `http`, `https`, and `mailto` links open with `Launcher.LaunchUriAsync`. They do not render inside the window.
 
 ## What the slice leaves out
 
 Tabs, editing, drag and drop, the Jump List, reading-width controls, focus mode, file watching, PDF, DOCX, signing, and the Store. Quick Look, the macOS toolbar, and Universal 2 stay on the Mac.
-
-A directory junction inside the document folder can still point at a file outside that folder. This slice does not resolve junctions.
