@@ -1,0 +1,63 @@
+{
+  "product": "PreviewMD",
+  "version": "1.9",
+  "build": "13",
+  "release_date": "2026-10-06",
+  "distribution": "local installer; no GitHub Release or landing-page download change",
+  "source_revision": "f8c4fdb23e758dd46b5d8c7dc15296dcfb6d84ab",
+  "fixes_main_revision": "bef87f24b1a49ec25e6aad3b430226a91ea4f99f",
+  "bundle_identifier": "pl.jesion.previewmd",
+  "quicklook_bundle_identifier": "pl.jesion.previewmd.quicklook",
+  "team_identifier": "4NZF9USX28",
+  "signing_identity": "Developer ID Application: Astrography Sp. z o.o. (4NZF9USX28)",
+  "architectures": [
+    "arm64",
+    "x86_64"
+  ],
+  "quicklook_architectures": [
+    "arm64",
+    "x86_64"
+  ],
+  "minimum_macos": "14.0",
+  "sdk": "27.0",
+  "hardened_runtime": true,
+  "notarization": {
+    "application": {
+      "submission_id": "948b4107-14ea-4381-9b05-28d22af3ac7d",
+      "status": "Accepted",
+      "ticket_stapled": true
+    },
+    "dmg": {
+      "submission_id": "9dc40a47-728c-49c1-bda7-3dd551090948",
+      "status": "Accepted",
+      "ticket_stapled": true
+    }
+  },
+  "gatekeeper": {
+    "application": "Notarized Developer ID",
+    "dmg": "Notarized Developer ID"
+  },
+  "artifacts": [
+    {
+      "filename": "PreviewMD-1.9-13-macOS.dmg",
+      "size_bytes": 7270765,
+      "sha256": "8ad40865c276a6dbfc7becf3cef7e216938195b6cf110d2377430a77ea631e99"
+    },
+    {
+      "filename": "PreviewMD-1.9-13-macOS.zip",
+      "size_bytes": 7026785,
+      "sha256": "8404a6157137ad7819f94d7f6a86f61892a0dc6dd1688cc9bbe7bebd514f9feb"
+    }
+  ],
+  "repository_installer": "dist/PreviewMD-1.9-13-macOS.dmg",
+  "repository_fallback_archive": "dist/PreviewMD-1.9-13-macOS.zip",
+  "repository_application": "dist/releases/PreviewMD-1.9-13/PreviewMD.app",
+  "verification": {
+    "mounted_installer_checked": true,
+    "application_and_quicklook_versions_match": true,
+    "all_four_architecture_slices_checked": true,
+    "bundled_renderer_and_legal_files_match_source": true,
+    "additional_installer_copy_sha256_matches": true,
+    "previous_release_preserved": true
+  }
+}
