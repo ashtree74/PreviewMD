@@ -1,0 +1,45 @@
+{
+  "product": "PreviewMD",
+  "version": "1.8",
+  "build": "12",
+  "release_date": "2026-10-06",
+  "bundle_identifier": "pl.jesion.previewmd",
+  "team_identifier": "4NZF9USX28",
+  "signing_identity": "Developer ID Application: Astrography Sp. z o.o. (4NZF9USX28)",
+  "architectures": [
+    "arm64",
+    "x86_64"
+  ],
+  "minimum_macos": "14.0",
+  "sdk": "27.0",
+  "hardened_runtime": true,
+  "notarization": {
+    "application": {
+      "submission_id": "561f54d2-cace-4732-aa60-569e2f2b9cdb",
+      "status": "Accepted",
+      "ticket_stapled": true
+    },
+    "dmg": {
+      "submission_id": "efdec2e8-a377-4607-8bd4-3dea9ee9df78",
+      "status": "Accepted",
+      "ticket_stapled": true
+    }
+  },
+  "gatekeeper": {
+    "application": "Notarized Developer ID",
+    "dmg": "Notarized Developer ID"
+  },
+  "artifacts": [
+    {
+      "filename": "PreviewMD-1.8-12-macOS.dmg",
+      "size_bytes": 7269630,
+      "sha256": "616617e978e5552e54aa2c444e17a5b05b13a0072a933e2e3b113d195ba2d29f"
+    },
+    {
+      "filename": "PreviewMD-1.8-12-macOS.zip",
+      "size_bytes": 7022235,
+      "sha256": "4c7f2f6a6eb3d9640be182f42466ca1383492fa42e535ef70323cc45ebc9737c"
+    }
+  ],
+  "repository_installer": "site/PreviewMD-1.8-12-macOS.dmg"
+}

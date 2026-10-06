@@ -129,5 +129,15 @@ SDK-dependent adoption of native appearance in
 3. Review the independent Windows work in #22 / PR #28 separately from the
    supported macOS application.
 
-The local build is ad-hoc signed. Public release versioning, notarization,
-release downloads, and deployment are a separate release workflow.
+The audit's initial local build was ad-hoc signed. The final maintainer release
+is PreviewMD 1.8 (12), signed with Developer ID and Hardened Runtime. Apple
+accepted both the application and final DMG; each has a stapled ticket and
+passes Gatekeeper as `Notarized Developer ID`. The application inside the final
+read-only DMG was checked independently for signatures, versions, architectures,
+SDK metadata, bundled offline resources, licenses, and installation layout.
+
+The distributable DMG is tracked in `site/`, with matching download/version
+metadata and a bumped JavaScript cache key. Submission IDs, artifact sizes and
+SHA-256 digests are recorded in
+[the release receipt](releases/PreviewMD-1.8-12.json). Production website
+deployment remains separate.

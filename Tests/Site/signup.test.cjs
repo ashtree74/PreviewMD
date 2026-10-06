@@ -59,7 +59,7 @@ function modalHarness() {
     AbortController,
     NEWSLETTER_ENDPOINT: "api/subscribe",
     DOWNLOAD_ENDPOINT: "api/download",
-    DOWNLOAD_FILE: "PreviewMD-1.7-11-macOS.dmg",
+    DOWNLOAD_FILE: "PreviewMD-1.8-12-macOS.dmg",
     console: { warn: (...args) => warnings.push(args) },
     fetch: (url, options) => new Promise((resolve, reject) => {
       // Deliberately allow completion after abort: responses can already be
