@@ -747,7 +747,14 @@ enum MarkdownSourceHighlighting {
         let old = previous as NSString
         let new = current as NSString
         let oldLines = old.lineRange(for: ranges.previous)
-        let newLines = new.lineRange(for: ranges.current)
+        // A line split can move an unchanged suffix beyond the inserted range.
+        // Its old syntax attributes still need resetting in the new context.
+        let movedLineEnd = NSMaxRange(oldLines) + new.length - old.length
+        let affectedEnd = max(NSMaxRange(ranges.current), movedLineEnd)
+        let newLines = new.lineRange(for: NSRange(
+            location: oldLines.location,
+            length: affectedEnd - oldLines.location
+        ))
         let oldChangedLines = old.substring(with: oldLines)
         let newChangedLines = new.substring(with: newLines)
         if oldChangedLines.contains("```") || oldChangedLines.contains("~~~")

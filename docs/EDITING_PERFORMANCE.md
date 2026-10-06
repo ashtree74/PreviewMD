@@ -24,8 +24,9 @@ Native profiling exposed costs that the earlier component harness missed:
   cannot publish stale keyboard input.
 - Visible rich-to-source updates now replace only the changed UTF-16 range,
   retaining attributes outside it and using incremental highlighting. Ranges
-  preserve surrogate pairs. Fence edits and appearance changes keep full
-  highlighting passes.
+  preserve surrogate pairs. Highlighting also covers the moved suffix of a
+  split source line, so rich echoes and Undo cannot retain obsolete syntax
+  colors. Fence edits and appearance changes keep full highlighting passes.
 
 ## Before and after
 
@@ -41,10 +42,10 @@ for deferred work. The pause is excluded. Medians are milliseconds:
 
 | Mode | Input operation, before → after | Document revision, before → after | Revision and forced native display, before → after |
 | --- | --- | --- | --- |
-| Markdown | 26.87 → 8.42 | 26.88 → 8.43 | 65.68 → 51.86 |
-| Preview | 1.71 → 1.70 | 74.12 → 50.28 | 75.30 → 52.62 |
-| Split, Markdown input | 27.43 → 8.96 | 27.44 → 8.97 | 74.60 → 60.03 |
-| Split, Preview input | 1.71 → 1.92 | 74.13 → 65.25 | 75.83 → 67.35 |
+| Markdown | 26.87 → 8.56 | 26.88 → 8.57 | 65.68 → 52.35 |
+| Preview | 1.71 → 1.81 | 74.12 → 50.21 | 75.30 → 52.02 |
+| Split, Markdown input | 27.43 → 8.93 | 27.44 → 8.94 | 74.60 → 59.44 |
+| Split, Preview input | 1.71 → 2.03 | 74.13 → 20.07 | 75.83 → 67.25 |
 
 The native input operation includes synchronous AppKit callbacks. Rich input
 includes WebKit IPC; the DOM insertion is already fast and is not the principal
@@ -93,7 +94,10 @@ excludes space reserved by classic scrollbars; otherwise their stable gutter
 creates a 17 px overflow that is absent with overlay scrollbars. The expansion
 action
 sits above wide tables, away from their headers, with keyboard focus styling
-preserved.
+preserved and at least 4 px clearance from the previous table at the minimum
+custom text size. The rounded sizer uses table layout, allowing intrinsic
+content such as long unwrapped headers to grow beyond the preferred minimum.
+Such content stays fully reachable through the viewport's horizontal scroll.
 
 `RendererAuditTests.testExpandedTableUsesAvailableSpaceWithoutNearFitScrolling`
 sweeps 980/1800/520/980 pt windows and 902/560/480/902 pt reading widths using
@@ -101,8 +105,11 @@ the showcase's four-column table. It checks the final article width, minimum
 and actual column widths, scroll extent, right edge, action/header separation
 and collapse, plus a simulated classic-scrollbar inset without changing system
 preferences. CI also exercises real classic scrollbars. The six-column
-regression retains independent expansion and
-unchanged Markdown serialization.
+regression retains independent expansion and unchanged Markdown serialization.
+Long-header tests check the actual table edge against its rounded sizer and
+the viewport after scrolling to the end, in collapsed and expanded states,
+at narrow, near-fit, roomy and reserved-scrollbar widths. Adjacent tables at
+the 13 px custom text minimum also verify action clearance.
 
 For deterministic policy checks, the test finishes CSS width transitions and
 calls the editor's existing public relayout hook: headless WebKit can suspend
@@ -111,12 +118,21 @@ Set `PREVIEWMD_TABLE_SNAPSHOTS` to a temporary directory to export PNGs and
 geometry for visual inspection. The near-fit and roomy tables fit without
 scroll; narrow columns remain at least 144 px and scroll as needed.
 
-## Validation
+## Independent review and validation
 
-The full local suite passed: 174 XCTest and 5 Swift Testing tests, with the
+Two reviewers with no inherited implementation history independently examined
+native editing and renderer behavior. They found three regressions: stale
+colors on moved source suffixes, inaccessible columns behind a too-small
+rounded sizer, and an expansion action overlapping a previous table at small
+text sizes. All three added regression tests failed on the original patch,
+then passed after the fixes. Both reviewers repeated their review of the
+resulting patch and found no unresolved findings in scope. This is independent
+agent review, not a GitHub approval submission.
+
+The full local suite passed: 177 XCTest and 5 Swift Testing tests, with the
 opt-in profiler explicitly skipped in the normal run. The profiler passed
-separately on baseline and patch. The final renderer checks passed after the
-header-action adjustment. Nine Python site tests and eight Node signup tests
+separately on baseline and patch, and the after report was refreshed after
+the independent-review fixes. Nine Python site tests and eight Node signup tests
 also passed. The complete ad-hoc bundle and embedded Quick Look extension
 passed strict signature verification, contain both arm64 and x86_64, and have
 matching current renderer resources. The build script verified macOS 14

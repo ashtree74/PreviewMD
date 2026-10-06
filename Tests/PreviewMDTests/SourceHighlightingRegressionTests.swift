@@ -54,6 +54,49 @@ final class SourceHighlightingRegressionTests: XCTestCase {
         return view.subviews.lazy.compactMap { self.findTextView(in: $0) }.first
     }
 
+    func testRichEchoRecolorsTheMovedSuffixWhenSplittingLogicalLines() async throws {
+        _ = NSApplication.shared
+        for (previous, current) in [
+            ("# Heading\n\nTail", "# Head\n\ning\n\nTail"),
+            ("# Heading\r\n\r\nTail", "# Head\r\n\r\ning\r\n\r\nTail"),
+            ("1. item\n\nTail", "1\n\n. item\n\nTail"),
+            ("- [ ] task\n\nTail", "- [\n\n] task\n\nTail"),
+            ("[label](target)\n\nTail", "[la\n\nbel](target)\n\nTail")
+        ] {
+            let host = NSHostingView(rootView: MarkdownSourceEditor(text: .constant(previous)))
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 420),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = host
+            host.layoutSubtreeIfNeeded()
+            defer { window.close() }
+            let textView = try XCTUnwrap(findTextView(in: host))
+            host.rootView = MarkdownSourceEditor(text: .constant(current))
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(50))
+            XCTAssertEqual(textView.string, current)
+
+            let expected = NSTextView()
+            expected.appearance = textView.effectiveAppearance
+            expected.string = current
+            let coordinator = MarkdownSourceEditor.Coordinator(
+                text: .constant(current), documentID: nil,
+                splitSynchronizer: nil, isSplitSynchronizationEnabled: false
+            )
+            coordinator.textView = expected
+            coordinator.highlight(forceFull: true)
+            let actualStorage = try XCTUnwrap(textView.textStorage)
+            let expectedStorage = try XCTUnwrap(expected.textStorage)
+            for offset in 0..<expectedStorage.length {
+                XCTAssertEqual(
+                    actualStorage.attribute(.foregroundColor, at: offset, effectiveRange: nil) as? NSColor,
+                    expectedStorage.attribute(.foregroundColor, at: offset, effectiveRange: nil) as? NSColor,
+                    "Moved source must match full highlighting at UTF-16 offset \(offset): \(current)"
+                )
+            }
+        }
+    }
+
     func testSingleLineEditDoesNotRestyleTheWholeDocument() throws {
         _ = NSApplication.shared
         let source = "# Heading\n\n" + (0..<2_000).map { "Plain line \($0)" }.joined(separator: "\n")

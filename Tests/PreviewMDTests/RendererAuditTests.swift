@@ -332,6 +332,94 @@ final class RendererAuditTests: XCTestCase, WKNavigationDelegate {
         XCTAssertEqual(metrics["client"] as? Int, metrics["scroll"] as? Int)
     }
 
+    func testLongTableHeadersRemainReachableWhenTheSurfaceCannotFitTheirIntrinsicWidth() async throws {
+        let webView = try await makeEditor("""
+        | WWWWWWWWWWWWWWWW | WWWWWWWWWWWWWWWW | WWWWWWWWWWWWWWWW | WWWWWWWWWWWWWWWW |
+        | - | - | - | - |
+        | one | two | three | four |
+        """)
+        for (windowWidth, classic) in [(980, false), (1800, false), (520, false), (980, true)] {
+            webView.setFrameSize(NSSize(width: CGFloat(windowWidth), height: 700))
+            let result = try await webView.callAsyncJavaScript(
+                """
+                window.previewmdSetLayout(902, false, 0, false);
+                const wrapper = document.querySelector('.table-scroll');
+                const viewport = wrapper.querySelector('.table-viewport');
+                viewport.style.borderRight = classic ? '17px solid transparent' : '';
+                await new Promise(resolve => setTimeout(resolve, 300));
+                document.getElementById('preview-document').getAnimations().forEach(animation => animation.finish());
+                window.previewmdRefreshTableLayout();
+                const originalMarkdown = window.previewmdFlushEditor();
+                const states = [];
+                for (const expanded of [false, true, false]) {
+                  const button = wrapper.querySelector('.table-expand');
+                  if ((button.getAttribute('aria-expanded') === 'true') !== expanded) button.click();
+                  viewport.scrollLeft = 100000;
+                  const table = wrapper.querySelector('table');
+                  states.push({
+                    expanded, client: viewport.clientWidth, scroll: viewport.scrollWidth,
+                    scrollLeft: viewport.scrollLeft,
+                    tableRight: table.getBoundingClientRect().right,
+                    sizerRight: wrapper.querySelector('.table-sizer').getBoundingClientRect().right,
+                    viewportRight: viewport.getBoundingClientRect().right - (viewport.offsetWidth - viewport.clientWidth),
+                    whitespace: getComputedStyle(table.querySelector('th')).whiteSpace
+                  });
+                }
+                return { states, unchanged: originalMarkdown === window.previewmdFlushEditor() };
+                """, arguments: ["classic": classic], contentWorld: .page
+            )
+            let output = try XCTUnwrap(result as? [String: Any])
+            XCTAssertEqual(output["unchanged"] as? Bool, true)
+            for metrics in try XCTUnwrap(output["states"] as? [[String: Any]]) {
+                let tableRight = try XCTUnwrap(metrics["tableRight"] as? Double)
+                XCTAssertLessThanOrEqual(tableRight, try XCTUnwrap(metrics["sizerRight"] as? Double) + 1,
+                                         "The rounded sizer must contain every column: \(metrics)")
+                XCTAssertLessThanOrEqual(tableRight, try XCTUnwrap(metrics["viewportRight"] as? Double) + 1,
+                                         "Scrolling to the end must expose the last column: \(metrics)")
+                XCTAssertEqual(metrics["whitespace"] as? String, "nowrap")
+                let client = try XCTUnwrap(metrics["client"] as? Int)
+                let scroll = try XCTUnwrap(metrics["scroll"] as? Int)
+                if windowWidth == 1800, metrics["expanded"] as? Bool == true {
+                    XCTAssertEqual(client, scroll)
+                } else if windowWidth != 1800 {
+                    XCTAssertGreaterThan(scroll, client, "Intrinsic content that cannot fit must remain scrollable")
+                    XCTAssertGreaterThan(metrics["scrollLeft"] as? Double ?? 0, 0)
+                }
+            }
+        }
+    }
+
+    func testWideTableActionsStayClearOfThePreviousTableAtMinimumCustomTextSize() async throws {
+        let table = "| Area | Status | Owner | Progress |\n| - | - | - | - |\n| App | Ready | Design | Done |"
+        let markdown = table + "\n\n" + table
+        let webView = try await makeEditor(markdown)
+        webView.setFrameSize(NSSize(width: 980, height: 700))
+        let result = try await webView.callAsyncJavaScript(
+            """
+            await window.previewmdRender({ markdown, theme: 'light', readingStyle: 'custom',
+              customReadingPreset: {bodySize:13, lineHeight:1.25, bodyFont:'system', headingFont:'serif'},
+              readingWidth:902, paperCanvas:false, topInset:0 });
+            await new Promise(resolve => setTimeout(resolve, 300));
+            document.getElementById('preview-document').getAnimations().forEach(animation => animation.finish());
+            window.previewmdRefreshTableLayout();
+            const wrappers = Array.from(document.querySelectorAll('.table-scroll'));
+            wrappers.forEach(wrapper => wrapper.querySelector('.table-expand').click());
+            return {
+              count:wrappers.length,
+              fontSize:parseFloat(getComputedStyle(document.getElementById('preview-document')).fontSize),
+              previousBottom:wrappers[0].getBoundingClientRect().bottom,
+              buttonTop:wrappers[1].querySelector('.table-expand').getBoundingClientRect().top
+            };
+            """, arguments: ["markdown": markdown], contentWorld: .page
+        )
+        let metrics = try XCTUnwrap(result as? [String: Any])
+        XCTAssertEqual(metrics["count"] as? Int, 2)
+        XCTAssertEqual(metrics["fontSize"] as? Double, 13)
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(metrics["buttonTop"] as? Double),
+                                    try XCTUnwrap(metrics["previousBottom"] as? Double) + 3.5,
+                                    "An expansion action needs clear space above its table at the smallest text size")
+    }
+
     func testHiddenSourceIsRenderedBeforePDFPreparationAndRestoredAfterward() async throws {
         let webView = try await makeEditor("Old source")
         let coordinator = outputCoordinator(in: webView, visible: false)
