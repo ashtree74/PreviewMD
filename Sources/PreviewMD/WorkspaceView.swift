@@ -1860,7 +1860,8 @@ private struct DocumentWorkspace: View {
                     SourceEditor(
                         documentID: document.id,
                         splitSynchronizer: splitSynchronizer,
-                        isSplitSynchronizationEnabled: isSplit
+                        isSplitSynchronizationEnabled: isSplit,
+                        isVisible: visibleSourceWidth > 0
                     )
                         .frame(width: visibleSourceWidth)
                         .opacity(visibleSourceWidth > 0 ? 1 : 0)
@@ -2153,6 +2154,7 @@ private struct SourceEditor: View {
     let documentID: UUID
     let splitSynchronizer: SplitEditorSynchronizer
     let isSplitSynchronizationEnabled: Bool
+    let isVisible: Bool
 
     var body: some View {
         ZStack {
@@ -2161,7 +2163,8 @@ private struct SourceEditor: View {
                 text: state.bindingForCurrentContent(),
                 documentID: documentID,
                 splitSynchronizer: splitSynchronizer,
-                isSplitSynchronizationEnabled: isSplitSynchronizationEnabled
+                isSplitSynchronizationEnabled: isSplitSynchronizationEnabled,
+                isVisible: isVisible
             )
         }
     }

@@ -215,6 +215,7 @@ struct MarkdownSourceEditor: NSViewRepresentable {
     var documentID: UUID? = nil
     var splitSynchronizer: SplitEditorSynchronizer? = nil
     var isSplitSynchronizationEnabled = false
+    var isVisible = true
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -235,6 +236,7 @@ struct MarkdownSourceEditor: NSViewRepresentable {
         let textView = MarkdownSourceTextView()
         textView.delegate = context.coordinator
         textView.isRichText = false
+        textView.isEditable = isVisible
         textView.importsGraphics = false
         textView.allowsUndo = false
         textView.isAutomaticQuoteSubstitutionEnabled = false
@@ -252,7 +254,7 @@ struct MarkdownSourceEditor: NSViewRepresentable {
             height: CGFloat.greatestFiniteMagnitude
         )
         textView.backgroundColor = .clear
-        textView.string = text
+        textView.string = isVisible ? text : ""
         scrollView.documentView = textView
 
         let lineNumberRuler = MarkdownLineNumberRulerView(
@@ -272,7 +274,7 @@ struct MarkdownSourceEditor: NSViewRepresentable {
             splitSynchronizer: splitSynchronizer,
             isEnabled: isSplitSynchronizationEnabled
         )
-        context.coordinator.highlight()
+        if isVisible { context.coordinator.highlight() }
         return container
     }
 
@@ -286,14 +288,31 @@ struct MarkdownSourceEditor: NSViewRepresentable {
             splitSynchronizer: splitSynchronizer,
             isEnabled: isSplitSynchronizationEnabled
         )
+        // Keep the view identity and selection while Preview is visible, but
+        // defer text storage, layout and coloring until the source is revealed.
+        // The binding always supplies the latest document on that update.
         guard let textView = context.coordinator.textView else { return }
+        textView.isEditable = isVisible
+        guard isVisible else {
+            if textView.window?.firstResponder === textView {
+                textView.window?.makeFirstResponder(nil)
+            }
+            return
+        }
         let contentChanged = textView.string != text
         let appearanceChanged = context.coordinator.lastAppearanceName
             != textView.effectiveAppearance.name
         if contentChanged {
             let selection = textView.selectedRange()
-            textView.string = text
             context.coordinator.withoutPublishingSelection {
+                if let storage = textView.textStorage,
+                   let ranges = MarkdownSourceHighlighting.changedTextRanges(from: textView.string, to: text) {
+                    // Preserve unaffected text attributes and layout when a
+                    // rich edit is echoed into the visible source pane.
+                    storage.replaceCharacters(in: ranges.previous, with: (text as NSString).substring(with: ranges.current))
+                } else {
+                    textView.string = text
+                }
                 textView.setSelectedRange(
                     NSRange(
                         location: min(selection.location, (text as NSString).length),
@@ -303,7 +322,7 @@ struct MarkdownSourceEditor: NSViewRepresentable {
             }
         }
         if contentChanged || appearanceChanged {
-            context.coordinator.highlight(forceFull: true)
+            context.coordinator.highlight(forceFull: appearanceChanged || textView.textStorage == nil)
             context.coordinator.lineNumberRuler?.reload()
         }
         if contentChanged,
@@ -357,7 +376,7 @@ struct MarkdownSourceEditor: NSViewRepresentable {
         }
 
         func textDidChange(_ notification: Notification) {
-            guard let textView else { return }
+            guard let textView, textView.isEditable else { return }
             text.wrappedValue = textView.string
             lineNumberRuler?.reload()
             scheduleHighlight()
@@ -686,10 +705,9 @@ struct MarkdownSourceEditor: NSViewRepresentable {
 }
 
 enum MarkdownSourceHighlighting {
-    /// AppKit shifts existing attributes as characters are edited. Recolor only
-    /// changed logical lines; edits to fence boundaries can affect the rest of
-    /// the document, so those deliberately retain the full pass.
-    static func changedLineRange(from previous: String, to current: String) -> NSRange? {
+    /// Matching UTF-16 ranges, widened at surrogate boundaries so the inserted
+    /// substring cannot lose half of an emoji during NSString-to-String bridging.
+    static func changedTextRanges(from previous: String, to current: String) -> (previous: NSRange, current: NSRange)? {
         let old = previous as NSString
         let new = current as NSString
         var start = 0
@@ -705,8 +723,38 @@ enum MarkdownSourceHighlighting {
             oldEnd -= 1
             newEnd -= 1
         }
-        let oldLines = old.lineRange(for: NSRange(location: start, length: oldEnd - start))
-        let newLines = new.lineRange(for: NSRange(location: start, length: newEnd - start))
+        if splitsSurrogate(in: old, at: start) || splitsSurrogate(in: new, at: start) {
+            start -= 1
+        }
+        if splitsSurrogate(in: old, at: oldEnd) || splitsSurrogate(in: new, at: newEnd) {
+            oldEnd += 1
+            newEnd += 1
+        }
+        return (NSRange(location: start, length: oldEnd - start), NSRange(location: start, length: newEnd - start))
+    }
+
+    private static func splitsSurrogate(in source: NSString, at offset: Int) -> Bool {
+        guard offset > 0, offset < source.length else { return false }
+        return (0xD800...0xDBFF).contains(source.character(at: offset - 1))
+            && (0xDC00...0xDFFF).contains(source.character(at: offset))
+    }
+
+    /// AppKit shifts existing attributes as characters are edited. Recolor only
+    /// changed logical lines; edits to fence boundaries can affect the rest of
+    /// the document, so those deliberately retain the full pass.
+    static func changedLineRange(from previous: String, to current: String) -> NSRange? {
+        guard let ranges = changedTextRanges(from: previous, to: current) else { return nil }
+        let old = previous as NSString
+        let new = current as NSString
+        let oldLines = old.lineRange(for: ranges.previous)
+        // A line split can move an unchanged suffix beyond the inserted range.
+        // Its old syntax attributes still need resetting in the new context.
+        let movedLineEnd = NSMaxRange(oldLines) + new.length - old.length
+        let affectedEnd = max(NSMaxRange(ranges.current), movedLineEnd)
+        let newLines = new.lineRange(for: NSRange(
+            location: oldLines.location,
+            length: affectedEnd - oldLines.location
+        ))
         let oldChangedLines = old.substring(with: oldLines)
         let newChangedLines = new.substring(with: newLines)
         if oldChangedLines.contains("```") || oldChangedLines.contains("~~~")

@@ -550,16 +550,25 @@
     const readableColumnWidth = Math.max(144, computedCellWidth || 0);
     const expanded = wrapper.classList.contains("is-expanded");
     const contentWidth = articleContentWidth();
+    const viewport = wrapper.querySelector(".table-viewport");
+    // Classic scrollbars reserve inline space even without vertical overflow
+    // because the viewport uses scrollbar-gutter: stable. Overlay bars do not.
+    const scrollbarGutter = viewport ? Math.max(0, viewport.offsetWidth - viewport.clientWidth) : 0;
     const baseTableWidth = columnCount * readableColumnWidth;
-    const tableWidth = columnCount *
-      (expanded ? Math.max(220, readableColumnWidth) : readableColumnWidth);
-    const shouldUseWideSurface = expanded || baseTableWidth > contentWidth + 1;
+    const shouldUseWideSurface = expanded || baseTableWidth > contentWidth - scrollbarGutter + 1;
+    const surface = shouldUseWideSurface ? wideTableSurface() : null;
+    const surfaceWidth = surface ? Math.max(contentWidth, surface.width) : contentWidth;
+    const availableWidth = surface ? Math.max(0, surfaceWidth - surface.leadingGutter - scrollbarGutter) : contentWidth - scrollbarGutter;
+    // Use the free surface before introducing scroll, but keep the collapsed
+    // minimum so narrow windows never squeeze columns below their readable size.
+    const tableWidth = expanded
+      ? Math.max(baseTableWidth, Math.min(availableWidth, columnCount * Math.max(220, readableColumnWidth)))
+      : baseTableWidth;
 
     if (sizer) sizer.style.minWidth = tableWidth + "px";
     wrapper.classList.toggle("is-wide", shouldUseWideSurface);
     if (shouldUseWideSurface) {
-      const surface = wideTableSurface();
-      wrapper.style.width = Math.max(contentWidth, surface.width) + "px";
+      wrapper.style.width = surfaceWidth + "px";
       wrapper.style.marginLeft = -surface.leadingGutter + "px";
       wrapper.style.setProperty(
         "--table-leading-gutter",

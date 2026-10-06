@@ -623,6 +623,7 @@ code {
 
 .table-scroll.is-wide {
   max-width: none;
+  margin-top: max(36px, calc(1.55em + 8px));
 }
 
 .table-scroll.is-wide .table-sizer {
@@ -632,6 +633,9 @@ code {
 
 .table-scroll.is-wide > .table-expand,
 .table-scroll.is-expanded > .table-expand {
+  /* A wide surface has no room beside the table. Keep its action above the
+     header instead of obscuring the final column or a scrolled header. */
+  top: -32px;
   right: 8px;
 }
 
@@ -649,6 +653,9 @@ code {
 }
 
 .table-sizer {
+  /* Let intrinsic table content grow the rounded surface instead of being
+     clipped by a width chosen for shorter headers. The viewport owns scroll. */
+  display: table;
   width: 100%;
   overflow: hidden;
   border: 1px solid var(--line);

@@ -25,7 +25,11 @@ covered by a focused regression rather than a snapshot of the implementation.
   blocks; split position work runs only when needed. Source-only edits defer
   hidden DOM rebuilding, and disk fingerprints/diffs run away from the main
   actor. Export and visible-editor flushes synchronize pending rendering before
-  using the WebView.
+  using the WebView. Follow-up native workspace profiling found expensive
+  statistics on AppKit-backed strings and full source-pane updates during rich
+  editing. Normalize document storage to contiguous UTF-8, defer hidden source
+  work, and patch only changed source characters and their highlighting when
+  visible. See [the reproducible native measurements](EDITING_PERFORMANCE.md).
 - [PR #25](https://github.com/ashtree74/PreviewMD/pull/25) identifies the reading
   width transition race. Observe actual width changes and coalesce relayout on
   animation frames, including the final transition width.
@@ -33,8 +37,11 @@ covered by a focused regression rather than a snapshot of the implementation.
   gutter overflow. Account for that gutter in the wide table sizer's width.
   The report and CSS correction are credited to **jedrzejsieracki**.
 - [#27](https://github.com/ashtree74/PreviewMD/issues/27) proposes a different
-  expanded-table width policy. It remains a product decision; these fixes
-  preserve the existing expansion policy.
+  expanded-table width policy. Expanded tables now use available surface width
+  up to the 220 px column target while preserving the 144 px collapsed minimum.
+  Width sweeps cover near-fit, roomy and narrow surfaces, and the action sits
+  above wide tables so it cannot obscure their headers. The proposal is credited
+  to **jedrzejsieracki**.
 - [#22](https://github.com/ashtree74/PreviewMD/issues/22) and
   [PR #28](https://github.com/ashtree74/PreviewMD/pull/28) concern the Windows
   port and are independent of the macOS regressions.

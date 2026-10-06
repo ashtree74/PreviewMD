@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import PDFKit
 import WebKit
@@ -200,6 +201,223 @@ final class RendererAuditTests: XCTestCase, WKNavigationDelegate {
             XCTAssertEqual(output["wide"] as? Bool, 576 > columnWidth + 1)
             XCTAssertEqual(output["client"] as? Int, output["scroll"] as? Int)
         }
+    }
+
+    func testExpandedTableUsesAvailableSpaceWithoutNearFitScrolling() async throws {
+        let webView = try await makeEditor("""
+        | Area | Status | Owner | Progress |
+        | :--- | :---: | :--- | ---: |
+        | Native macOS shell | ✅ Ready | Design | 100% |
+        | Markdown reading and editing | ✅ Ready | Platform | 100% |
+        | Diagrams, math, and code | ✅ Ready | Content | 100% |
+        | Agent edit review | ✅ Ready | Automation | 100% |
+        | Quick Look and PDF export | ✅ Ready | Files | 100% |
+        """)
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 980, height: 700),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = webView
+        NSApplication.shared.setActivationPolicy(.regular)
+        window.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        window.makeFirstResponder(nil)
+        defer { window.close() }
+        var sweep: [[String: Any]] = []
+        var expanded = false
+        for (windowWidth, readingWidth, expected) in [
+            (980, 902, "near-fit"), (1800, 560, "roomy"),
+            (520, 480, "narrow"), (980, 902, "near-fit"),
+            (980, 902, "classic")
+        ] {
+            window.setContentSize(NSSize(width: CGFloat(windowWidth), height: 700))
+            webView.setFrameSize(NSSize(width: CGFloat(windowWidth), height: 700))
+            webView.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            try await Task.sleep(for: .milliseconds(100))
+            XCTAssertEqual(webView.bounds.width, CGFloat(windowWidth))
+            let result = try await webView.callAsyncJavaScript(
+                """
+                window.previewmdSetLayout(readingWidth, false, 0, false);
+                if (forceScrollbarGutter) {
+                  // Reserve the same inline space as a classic scrollbar
+                  // without changing the Mac's global scrollbar preference.
+                  document.querySelector('.table-viewport').style.borderRight = '17px solid transparent';
+                }
+                await new Promise(resolve => setTimeout(resolve, 300));
+                // Headless WebKit can suspend animation frames. Finish the
+                // width transition and use the editor's public layout hook.
+                const article = document.getElementById('preview-document');
+                article.getAnimations().forEach(animation => animation.finish());
+                window.previewmdRefreshTableLayout();
+                const wrapper = document.querySelector('.table-scroll');
+                if (!expanded) wrapper.querySelector('.table-expand').click();
+                const viewport = wrapper.querySelector('.table-viewport');
+                const sizer = wrapper.querySelector('.table-sizer');
+                const gutter = parseFloat(wrapper.style.getPropertyValue('--table-leading-gutter'));
+                const scrollbarGutter = viewport.offsetWidth - viewport.clientWidth;
+                const shell = document.getElementById('preview-shell');
+                const shellStyle = getComputedStyle(shell);
+                const expectedArticleWidth = Math.min(readingWidth, shell.clientWidth - parseFloat(shellStyle.paddingLeft) - parseFloat(shellStyle.paddingRight));
+                return {
+                  windowWidth: window.innerWidth,
+                  articleWidth: article.getBoundingClientRect().width, expectedArticleWidth,
+                  available: wrapper.getBoundingClientRect().width - gutter - scrollbarGutter,
+                  scrollbarGutter,
+                  minimum: parseFloat(sizer.style.minWidth),
+                  smallestColumn: Math.min(...Array.from(wrapper.querySelectorAll('th')).map(cell => cell.getBoundingClientRect().width)),
+                  buttonBottom: wrapper.querySelector('.table-expand').getBoundingClientRect().bottom,
+                  headerTop: wrapper.querySelector('th').getBoundingClientRect().top,
+                  client: viewport.clientWidth, scroll: viewport.scrollWidth,
+                  right: sizer.getBoundingClientRect().right,
+                  viewportRight: viewport.getBoundingClientRect().right - scrollbarGutter,
+                  expanded: wrapper.querySelector('.table-expand').getAttribute('aria-expanded')
+                };
+                """, arguments: ["readingWidth": readingWidth, "expanded": expanded, "forceScrollbarGutter": expected == "classic"], contentWorld: .page
+            )
+            expanded = true
+            let metrics = try XCTUnwrap(result as? [String: Any])
+            sweep.append(metrics)
+            XCTAssertEqual(metrics["windowWidth"] as? Int, windowWidth)
+            XCTAssertEqual(metrics["articleWidth"] as? Double ?? .nan, metrics["expectedArticleWidth"] as? Double ?? .nan, accuracy: 0.1)
+            let available = try XCTUnwrap(metrics["available"] as? Double)
+            let minimum = try XCTUnwrap(metrics["minimum"] as? Double)
+            let client = try XCTUnwrap(metrics["client"] as? Int)
+            let scroll = try XCTUnwrap(metrics["scroll"] as? Int)
+            XCTAssertEqual(metrics["expanded"] as? String, "true")
+            XCTAssertGreaterThanOrEqual(minimum, 576)
+            XCTAssertGreaterThanOrEqual(metrics["smallestColumn"] as? Double ?? 0, 144)
+            XCTAssertLessThanOrEqual(metrics["buttonBottom"] as? Double ?? .infinity, metrics["headerTop"] as? Double ?? -.infinity,
+                                     "The expansion action must not cover headers at any width")
+            switch expected {
+            case "near-fit", "classic":
+                if expected == "classic" { XCTAssertGreaterThan(metrics["scrollbarGutter"] as? Int ?? 0, 0) }
+                XCTAssertGreaterThan(available, 576)
+                XCTAssertLessThan(available, 880)
+                XCTAssertEqual(client, scroll, "Near-fit table must fit: \(metrics)")
+                XCTAssertEqual(minimum, available, accuracy: 0.1)
+                XCTAssertEqual(metrics["right"] as? Double ?? .nan, metrics["viewportRight"] as? Double ?? .nan, accuracy: 1)
+            case "roomy":
+                XCTAssertGreaterThan(available, 880)
+                XCTAssertEqual(minimum, 880)
+                XCTAssertEqual(client, scroll)
+            default:
+                XCTAssertLessThan(available, 576)
+                XCTAssertEqual(minimum, 576)
+                XCTAssertGreaterThan(scroll, client, "Unreadably small surfaces must still scroll")
+            }
+            if let path = ProcessInfo.processInfo.environment["PREVIEWMD_TABLE_SNAPSHOTS"] {
+                let directory = URL(fileURLWithPath: path, isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                let configuration = WKSnapshotConfiguration()
+                configuration.rect = NSRect(x: 0, y: 0, width: CGFloat(windowWidth), height: 400)
+                let snapshot = try await webView.takeSnapshot(configuration: configuration)
+                let bitmap = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(snapshot.tiffRepresentation)))
+                try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: directory.appendingPathComponent("table-\(expected)-\(sweep.count).png"))
+                try JSONSerialization.data(withJSONObject: sweep, options: [.prettyPrinted, .sortedKeys]).write(to: directory.appendingPathComponent("geometry.json"))
+            }
+        }
+        let collapsed = try await webView.callAsyncJavaScript(
+            """
+            const wrapper = document.querySelector('.table-scroll');
+            wrapper.querySelector('.table-expand').click();
+            const viewport = wrapper.querySelector('.table-viewport');
+            return { expanded: wrapper.querySelector('.table-expand').getAttribute('aria-expanded'),
+              minimum: wrapper.querySelector('.table-sizer').style.minWidth,
+              client: viewport.clientWidth, scroll: viewport.scrollWidth };
+            """, contentWorld: .page
+        )
+        let metrics = try XCTUnwrap(collapsed as? [String: Any])
+        XCTAssertEqual(metrics["expanded"] as? String, "false")
+        XCTAssertEqual(metrics["minimum"] as? String, "576px")
+        XCTAssertEqual(metrics["client"] as? Int, metrics["scroll"] as? Int)
+    }
+
+    func testLongTableHeadersRemainReachableWhenTheSurfaceCannotFitTheirIntrinsicWidth() async throws {
+        let webView = try await makeEditor("""
+        | WWWWWWWWWWWWWWWW | WWWWWWWWWWWWWWWW | WWWWWWWWWWWWWWWW | WWWWWWWWWWWWWWWW |
+        | - | - | - | - |
+        | one | two | three | four |
+        """)
+        for (windowWidth, classic) in [(980, false), (1800, false), (520, false), (980, true)] {
+            webView.setFrameSize(NSSize(width: CGFloat(windowWidth), height: 700))
+            let result = try await webView.callAsyncJavaScript(
+                """
+                window.previewmdSetLayout(902, false, 0, false);
+                const wrapper = document.querySelector('.table-scroll');
+                const viewport = wrapper.querySelector('.table-viewport');
+                viewport.style.borderRight = classic ? '17px solid transparent' : '';
+                await new Promise(resolve => setTimeout(resolve, 300));
+                document.getElementById('preview-document').getAnimations().forEach(animation => animation.finish());
+                window.previewmdRefreshTableLayout();
+                const originalMarkdown = window.previewmdFlushEditor();
+                const states = [];
+                for (const expanded of [false, true, false]) {
+                  const button = wrapper.querySelector('.table-expand');
+                  if ((button.getAttribute('aria-expanded') === 'true') !== expanded) button.click();
+                  viewport.scrollLeft = 100000;
+                  const table = wrapper.querySelector('table');
+                  states.push({
+                    expanded, client: viewport.clientWidth, scroll: viewport.scrollWidth,
+                    scrollLeft: viewport.scrollLeft,
+                    tableRight: table.getBoundingClientRect().right,
+                    sizerRight: wrapper.querySelector('.table-sizer').getBoundingClientRect().right,
+                    viewportRight: viewport.getBoundingClientRect().right - (viewport.offsetWidth - viewport.clientWidth),
+                    whitespace: getComputedStyle(table.querySelector('th')).whiteSpace
+                  });
+                }
+                return { states, unchanged: originalMarkdown === window.previewmdFlushEditor() };
+                """, arguments: ["classic": classic], contentWorld: .page
+            )
+            let output = try XCTUnwrap(result as? [String: Any])
+            XCTAssertEqual(output["unchanged"] as? Bool, true)
+            for metrics in try XCTUnwrap(output["states"] as? [[String: Any]]) {
+                let tableRight = try XCTUnwrap(metrics["tableRight"] as? Double)
+                XCTAssertLessThanOrEqual(tableRight, try XCTUnwrap(metrics["sizerRight"] as? Double) + 1,
+                                         "The rounded sizer must contain every column: \(metrics)")
+                XCTAssertLessThanOrEqual(tableRight, try XCTUnwrap(metrics["viewportRight"] as? Double) + 1,
+                                         "Scrolling to the end must expose the last column: \(metrics)")
+                XCTAssertEqual(metrics["whitespace"] as? String, "nowrap")
+                let client = try XCTUnwrap(metrics["client"] as? Int)
+                let scroll = try XCTUnwrap(metrics["scroll"] as? Int)
+                if windowWidth == 1800, metrics["expanded"] as? Bool == true {
+                    XCTAssertEqual(client, scroll)
+                } else if windowWidth != 1800 {
+                    XCTAssertGreaterThan(scroll, client, "Intrinsic content that cannot fit must remain scrollable")
+                    XCTAssertGreaterThan(metrics["scrollLeft"] as? Double ?? 0, 0)
+                }
+            }
+        }
+    }
+
+    func testWideTableActionsStayClearOfThePreviousTableAtMinimumCustomTextSize() async throws {
+        let table = "| Area | Status | Owner | Progress |\n| - | - | - | - |\n| App | Ready | Design | Done |"
+        let markdown = table + "\n\n" + table
+        let webView = try await makeEditor(markdown)
+        webView.setFrameSize(NSSize(width: 980, height: 700))
+        let result = try await webView.callAsyncJavaScript(
+            """
+            await window.previewmdRender({ markdown, theme: 'light', readingStyle: 'custom',
+              customReadingPreset: {bodySize:13, lineHeight:1.25, bodyFont:'system', headingFont:'serif'},
+              readingWidth:902, paperCanvas:false, topInset:0 });
+            await new Promise(resolve => setTimeout(resolve, 300));
+            document.getElementById('preview-document').getAnimations().forEach(animation => animation.finish());
+            window.previewmdRefreshTableLayout();
+            const wrappers = Array.from(document.querySelectorAll('.table-scroll'));
+            wrappers.forEach(wrapper => wrapper.querySelector('.table-expand').click());
+            return {
+              count:wrappers.length,
+              fontSize:parseFloat(getComputedStyle(document.getElementById('preview-document')).fontSize),
+              previousBottom:wrappers[0].getBoundingClientRect().bottom,
+              buttonTop:wrappers[1].querySelector('.table-expand').getBoundingClientRect().top
+            };
+            """, arguments: ["markdown": markdown], contentWorld: .page
+        )
+        let metrics = try XCTUnwrap(result as? [String: Any])
+        XCTAssertEqual(metrics["count"] as? Int, 2)
+        XCTAssertEqual(metrics["fontSize"] as? Double, 13)
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(metrics["buttonTop"] as? Double),
+                                    try XCTUnwrap(metrics["previousBottom"] as? Double) + 3.5,
+                                    "An expansion action needs clear space above its table at the smallest text size")
     }
 
     func testHiddenSourceIsRenderedBeforePDFPreparationAndRestoredAfterward() async throws {

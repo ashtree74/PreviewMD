@@ -303,16 +303,27 @@ enum WorkspaceFileSort: String, CaseIterable, Identifiable {
 /// repeatedly without rescanning the full document during an editing update.
 @propertyWrapper
 struct MarkdownText: Equatable {
+    private var text: String
     var wrappedValue: String {
-        didSet { updateStatistics() }
+        get { text }
+        set {
+            text = newValue
+            // AppKit and the WebKit bridge can supply NSString-backed text.
+            // Materialize UTF-8 once instead of paying foreign-string character
+            // iteration costs on every statistics pass and subsequent read.
+            text.makeContiguousUTF8()
+            updateStatistics()
+        }
     }
     private(set) var wordCount: Int
     private(set) var characterCount: Int
 
     init(wrappedValue: String) {
-        self.wrappedValue = wrappedValue
-        wordCount = wrappedValue.split(whereSeparator: \.isWhitespace).count
-        characterCount = wrappedValue.count
+        var text = wrappedValue
+        text.makeContiguousUTF8()
+        self.text = text
+        wordCount = text.split(whereSeparator: \.isWhitespace).count
+        characterCount = text.count
     }
 
     private mutating func updateStatistics() {
