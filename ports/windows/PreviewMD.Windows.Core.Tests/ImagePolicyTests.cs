@@ -134,15 +134,6 @@ public class ImagePolicyTests
             return;
         }
 
-        try
-        {
-            Directory.CreateSymbolicLink(linkPath, targetPath);
-            return;
-        }
-        catch (IOException)
-        {
-        }
-
         using var process = new Process();
         process.StartInfo.FileName = "cmd.exe";
         process.StartInfo.Arguments = "/c mklink /J \"" + linkPath + "\" \"" + targetPath + "\"";
