@@ -103,6 +103,119 @@ final class DOCXDocumentWriterTests: XCTestCase {
         XCTAssertEqual(urls?.first?.standardizedFileURL, url.standardizedFileURL)
     }
 
+    func testOrderedListsPreserveTheirStartsAndRestartIndependently() throws {
+        let package = try numberingPackage(html: """
+        <ol start="4"><li>Four</li><li>Five</li></ol>
+        <p>A separate list follows.</p>
+        <ol><li>One</li><li>Two</li></ol>
+        <ol start="9"><li>Nine</li></ol>
+        <ol start="0"><li>Zero</li></ol>
+        """)
+        let four = try XCTUnwrap(package.paragraphs["Four"])
+        let five = try XCTUnwrap(package.paragraphs["Five"])
+        let one = try XCTUnwrap(package.paragraphs["One"])
+        let two = try XCTUnwrap(package.paragraphs["Two"])
+        let nine = try XCTUnwrap(package.paragraphs["Nine"])
+        let zero = try XCTUnwrap(package.paragraphs["Zero"])
+
+        XCTAssertEqual(four.id, five.id)
+        XCTAssertEqual(one.id, two.id)
+        XCTAssertEqual(Set([four.id, one.id, nine.id, zero.id]).count, 4)
+        for (paragraph, start) in [(four, "4"), (one, "1"), (nine, "9"), (zero, "0")] {
+            let instance = try XCTUnwrap(package.instances[paragraph.id])
+            XCTAssertEqual(paragraph.level, "0")
+            XCTAssertEqual(instance.abstractID, "1")
+            XCTAssertEqual(instance.level, "0")
+            XCTAssertEqual(instance.start, start)
+        }
+    }
+
+    func testNestedListsHaveIndependentCountersAndKeepTheParentSequence() throws {
+        let package = try numberingPackage(html: """
+        <ol start="3">
+          <li>Parent first<ol start="7"><li>Nested first</li><li>Nested second</li></ol></li>
+          <li>Parent second<ol><li>Nested restart</li></ol></li>
+          <li>Parent third</li>
+        </ol>
+        <ul><li>Bullet<ol start="0"><li>Nested zero</li></ol></li></ul>
+        """)
+        let parent = try XCTUnwrap(package.paragraphs["Parent first"])
+        XCTAssertEqual(package.paragraphs["Parent second"]?.id, parent.id)
+        XCTAssertEqual(package.paragraphs["Parent third"]?.id, parent.id)
+        XCTAssertEqual(package.instances[parent.id]?.start, "3")
+
+        let nested = try XCTUnwrap(package.paragraphs["Nested first"])
+        let restart = try XCTUnwrap(package.paragraphs["Nested restart"])
+        let zero = try XCTUnwrap(package.paragraphs["Nested zero"])
+        XCTAssertEqual(package.paragraphs["Nested second"]?.id, nested.id)
+        XCTAssertEqual(Set([parent.id, nested.id, restart.id, zero.id]).count, 4)
+        for (paragraph, start) in [(nested, "7"), (restart, "1"), (zero, "0")] {
+            let instance = try XCTUnwrap(package.instances[paragraph.id])
+            XCTAssertEqual(paragraph.level, "1")
+            XCTAssertEqual(instance.level, "1")
+            XCTAssertEqual(instance.start, start)
+            XCTAssertEqual(instance.abstractID, "1")
+        }
+        let bullet = try XCTUnwrap(package.paragraphs["Bullet"])
+        XCTAssertEqual(package.instances[bullet.id]?.abstractID, "0")
+        XCTAssertNil(package.instances[bullet.id]?.start)
+    }
+
+    func testInvalidListStartsFallBackToOne() throws {
+        let package = try numberingPackage(html: """
+        <ol start="invalid"><li>Invalid</li></ol>
+        <ol start="999999999999999999999"><li>Too large</li></ol>
+        """)
+        for text in ["Invalid", "Too large"] {
+            let paragraph = try XCTUnwrap(package.paragraphs[text])
+            XCTAssertEqual(package.instances[paragraph.id]?.start, "1")
+        }
+    }
+
+    private struct NumberedParagraph {
+        let id: String
+        let level: String
+    }
+
+    private struct NumberingInstance {
+        let abstractID: String
+        let level: String?
+        let start: String?
+    }
+
+    private func numberingPackage(html: String) throws -> (
+        paragraphs: [String: NumberedParagraph],
+        instances: [String: NumberingInstance]
+    ) {
+        let data = try DOCXDocumentWriter.data(
+            html: "<html><body>\(html)</body></html>",
+            title: "Lists",
+            assets: []
+        )
+        let url = try temporaryDOCX(data)
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let document = try XMLDocument(data: packageEntryData("word/document.xml", in: url))
+        let numbering = try XMLDocument(data: packageEntryData("word/numbering.xml", in: url))
+        var paragraphs: [String: NumberedParagraph] = [:]
+        for node in try document.nodes(forXPath: "//w:p[w:pPr/w:numPr]") {
+            let text = try node.nodes(forXPath: ".//w:t").compactMap(\.stringValue).joined()
+            paragraphs[text] = NumberedParagraph(
+                id: try XCTUnwrap(node.nodes(forXPath: "./w:pPr/w:numPr/w:numId/@w:val").first?.stringValue),
+                level: try XCTUnwrap(node.nodes(forXPath: "./w:pPr/w:numPr/w:ilvl/@w:val").first?.stringValue)
+            )
+        }
+        var instances: [String: NumberingInstance] = [:]
+        for node in try numbering.nodes(forXPath: "//w:num") {
+            let id = try XCTUnwrap(node.nodes(forXPath: "./@w:numId").first?.stringValue)
+            instances[id] = NumberingInstance(
+                abstractID: try XCTUnwrap(node.nodes(forXPath: "./w:abstractNumId/@w:val").first?.stringValue),
+                level: try node.nodes(forXPath: "./w:lvlOverride/@w:ilvl").first?.stringValue,
+                start: try node.nodes(forXPath: "./w:lvlOverride/w:startOverride/@w:val").first?.stringValue
+            )
+        }
+        return (paragraphs, instances)
+    }
+
     private func temporaryDOCX(_ data: Data) throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("PreviewMD-docx-test-\(UUID().uuidString)")
