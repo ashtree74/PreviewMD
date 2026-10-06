@@ -17,7 +17,7 @@ import server as landing
 
 class PreviewMDLandingContentTests(unittest.TestCase):
     analytics_id = "G-8YXDM1JJH2"
-    release_archive = "PreviewMD-1.7-11-macOS.dmg"
+    release_archive = "PreviewMD-1.8-12-macOS.dmg"
     site_dir = Path(__file__).resolve().parent
 
     def test_editing_is_presented_as_a_core_capability(self) -> None:
@@ -51,7 +51,7 @@ class PreviewMDLandingContentTests(unittest.TestCase):
         self.assertIn("save your own named visual presets", normalized)
         self.assertIn("named visual presets", normalized)
         self.assertIn("body and heading fonts", normalized)
-        self.assertIn("styles.css?v=db-7", html)
+        self.assertIn("styles.css?v=db-8", html)
         self.assertIn(".spec-custom", stylesheet)
         self.assertIn(".preset-swatches", stylesheet)
 
@@ -71,10 +71,10 @@ class PreviewMDLandingContentTests(unittest.TestCase):
             f'const DOWNLOAD_FILE = "{self.release_archive}";',
             javascript,
         )
-        self.assertEqual(app_info["CFBundleShortVersionString"], "1.7")
-        self.assertEqual(app_info["CFBundleVersion"], "11")
-        self.assertIn("v1.7 (build 11)", html)
-        self.assertIn('main.js?v=db-11', html)
+        self.assertEqual(app_info["CFBundleShortVersionString"], "1.8")
+        self.assertEqual(app_info["CFBundleVersion"], "12")
+        self.assertIn("v1.8 (build 12)", html)
+        self.assertIn('main.js?v=db-13', html)
         self.assertNotIn("PreviewMD-1.6-10-macOS.dmg", html)
         self.assertNotIn("PreviewMD-1.6-10-macOS.dmg", javascript)
         self.assertNotIn("PreviewMD-1.5-7-macOS.zip", html)
@@ -117,7 +117,7 @@ class QuietRequestHandler(landing.PreviewMDRequestHandler):
 
 
 class PreviewMDServerTests(unittest.TestCase):
-    archive_name = "PreviewMD-1.7-11-macOS.dmg"
+    archive_name = "PreviewMD-1.8-12-macOS.dmg"
 
     def setUp(self) -> None:
         self.temporary_directory = TemporaryDirectory()
@@ -197,9 +197,9 @@ class PreviewMDServerTests(unittest.TestCase):
         for file_name in (
             "PreviewMD-missing-macOS.dmg",
             "PreviewMD-missing-macOS.zip",
-            "../PreviewMD-1.7-11-macOS.dmg",
-            "../PreviewMD-1.7-11-macOS.zip",
-            "PreviewMD-1.7-11-macOS.pkg",
+            "../PreviewMD-1.8-12-macOS.dmg",
+            "../PreviewMD-1.8-12-macOS.zip",
+            "PreviewMD-1.8-12-macOS.pkg",
             "not-previewmd.zip",
         ):
             status, payload = self.post_json(

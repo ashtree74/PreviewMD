@@ -1103,11 +1103,13 @@ private struct FolderBrowserSidebar: View {
                         } else {
                             VStack(spacing: 6) {
                                 Label(
-                                    "No Markdown Files",
-                                    systemImage: "doc.text.magnifyingglass"
+                                    state.workspaceFolderError == nil ? "No Markdown Files" : "Folder Unavailable",
+                                    systemImage: state.workspaceFolderError == nil ? "doc.text.magnifyingglass" : "exclamationmark.triangle"
                                 )
                                 .font(.callout.weight(.medium))
-                                Text("This folder has no supported documents.")
+                                Text(state.workspaceFolderError == nil
+                                     ? "This folder has no supported documents."
+                                     : "Restore access or open another folder.")
                                     .font(.caption)
                                     .multilineTextAlignment(.center)
                                     .foregroundStyle(.secondary)
@@ -1158,9 +1160,11 @@ private struct FlatFilesSidebar: View {
                             .foregroundStyle(.secondary)
                         } else {
                             ContentUnavailableView(
-                                "No Markdown Files",
-                                systemImage: "doc.text.magnifyingglass",
-                                description: Text("No supported documents were found.")
+                                state.workspaceFolderError == nil ? "No Markdown Files" : "Folder Unavailable",
+                                systemImage: state.workspaceFolderError == nil ? "doc.text.magnifyingglass" : "exclamationmark.triangle",
+                                description: Text(state.workspaceFolderError == nil
+                                                  ? "No supported documents were found."
+                                                  : "Restore access or open another folder.")
                             )
                         }
                     } else {
@@ -1211,6 +1215,15 @@ private struct FolderSearchSidebar: View {
                 ) {
                     state.presentFolderOpenPanel()
                 }
+            } else if let error = state.workspaceFolderError {
+                SidebarPlaceholder(
+                    title: "Folder Unavailable",
+                    description: "Restore access or open another folder.",
+                    symbol: "exclamationmark.triangle"
+                ) {
+                    state.presentFolderOpenPanel()
+                }
+                .help(error)
             } else if state.workspaceSearchQuery
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .isEmpty {
@@ -1444,36 +1457,45 @@ private struct FolderSectionHeader: View {
     let folderURL: URL
 
     var body: some View {
-        HStack(spacing: 7) {
-            Image(systemName: "folder.fill")
-                .foregroundStyle(.secondary)
-            Text(folderURL.lastPathComponent)
-                .fontWeight(.semibold)
-                .lineLimit(1)
-                .help(folderURL.path(percentEncoded: false))
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 7) {
+                Image(systemName: "folder.fill")
+                    .foregroundStyle(.secondary)
+                Text(folderURL.lastPathComponent)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                    .help(folderURL.path(percentEncoded: false))
 
-            Spacer(minLength: 4)
+                Spacer(minLength: 4)
 
-            if state.isWorkspaceFolderLoading {
-                ProgressView()
-                    .controlSize(.mini)
+                if state.isWorkspaceFolderLoading {
+                    ProgressView()
+                        .controlSize(.mini)
+                }
+
+                Button {
+                    state.refreshWorkspaceFolder()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .help("Refresh Folder")
+
+                Button {
+                    state.closeWorkspaceFolder()
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+                .help("Close Folder")
             }
-
-            Button {
-                state.refreshWorkspaceFolder()
-            } label: {
-                Image(systemName: "arrow.clockwise")
+            if let error = state.workspaceFolderError {
+                Label("Folder unavailable", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(error)
             }
-            .buttonStyle(.plain)
-            .help("Refresh Folder")
-
-            Button {
-                state.closeWorkspaceFolder()
-            } label: {
-                Image(systemName: "xmark")
-            }
-            .buttonStyle(.plain)
-            .help("Close Folder")
         }
         .textCase(nil)
     }
@@ -1873,7 +1895,8 @@ private struct DocumentWorkspace: View {
                     PreviewPane(
                         document: document,
                         splitSynchronizer: splitSynchronizer,
-                        isSplitSynchronizationEnabled: isSplit
+                        isSplitSynchronizationEnabled: isSplit,
+                        isVisible: !isSourceOnly
                     )
                         .frame(width: previewWidth)
                         .opacity(isSourceOnly ? 0 : 1)
@@ -1935,6 +1958,7 @@ private struct PreviewPane: View {
     let document: MarkdownDocument
     let splitSynchronizer: SplitEditorSynchronizer
     let isSplitSynchronizationEnabled: Bool
+    let isVisible: Bool
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -1963,6 +1987,7 @@ private struct PreviewPane: View {
                 controller: state.rendererController,
                 splitSynchronizer: splitSynchronizer,
                 isSplitSynchronizationEnabled: isSplitSynchronizationEnabled,
+                isVisible: isVisible,
                 onContentChange: { documentID, markdown, historyBoundary in
                     state.updateContent(
                         markdown,

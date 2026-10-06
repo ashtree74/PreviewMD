@@ -299,11 +299,33 @@ enum WorkspaceFileSort: String, CaseIterable, Identifiable {
     var title: String { self == .name ? "Name" : "Modified" }
 }
 
+/// Each text change computes reading statistics once; SwiftUI can read them
+/// repeatedly without rescanning the full document during an editing update.
+@propertyWrapper
+struct MarkdownText: Equatable {
+    var wrappedValue: String {
+        didSet { updateStatistics() }
+    }
+    private(set) var wordCount: Int
+    private(set) var characterCount: Int
+
+    init(wrappedValue: String) {
+        self.wrappedValue = wrappedValue
+        wordCount = wrappedValue.split(whereSeparator: \.isWhitespace).count
+        characterCount = wrappedValue.count
+    }
+
+    private mutating func updateStatistics() {
+        wordCount = wrappedValue.split(whereSeparator: \.isWhitespace).count
+        characterCount = wrappedValue.count
+    }
+}
+
 struct MarkdownDocument: Identifiable, Equatable {
     let id: UUID
     var url: URL?
     var title: String
-    var content: String
+    @MarkdownText var content: String
     var lastSavedContent: String
     /// Monotonically increasing in-memory revision shared by the source and
     /// rich editors. It prevents an edit echoed back from SwiftUI from
@@ -321,17 +343,19 @@ struct MarkdownDocument: Identifiable, Equatable {
     var isSample: Bool
     var hasExternalChanges = false
     var externalChangeReview: ExternalChangeReview? = nil
+    /// Supplied by the bundled Markdown parser, using the rendered heading IDs.
+    var outline: [OutlineHeading] = []
 
     var isDirty: Bool {
         content != lastSavedContent
     }
 
     var wordCount: Int {
-        content.split { $0.isWhitespace || $0.isNewline }.count
+        _content.wordCount
     }
 
     var characterCount: Int {
-        content.count
+        _content.characterCount
     }
 
     var readingMinutes: Int {
@@ -358,67 +382,4 @@ struct OutlineHeading: Identifiable, Equatable {
     let id: String
     let level: Int
     let title: String
-}
-
-enum MarkdownOutline {
-    static func headings(in markdown: String) -> [OutlineHeading] {
-        var headings: [OutlineHeading] = []
-        var insideFence = false
-        var fenceMarker = ""
-
-        for line in markdown.components(separatedBy: .newlines) {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-
-            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
-                let marker = String(trimmed.prefix(3))
-                if insideFence, marker == fenceMarker {
-                    insideFence = false
-                    fenceMarker = ""
-                } else if !insideFence {
-                    insideFence = true
-                    fenceMarker = marker
-                }
-                continue
-            }
-
-            guard !insideFence else { continue }
-
-            var hashCount = 0
-            for character in line {
-                if character == "#", hashCount < 6 {
-                    hashCount += 1
-                } else {
-                    break
-                }
-            }
-
-            guard hashCount > 0,
-                  line.dropFirst(hashCount).first?.isWhitespace == true
-            else { continue }
-
-            var title = String(line.dropFirst(hashCount))
-                .trimmingCharacters(in: .whitespaces)
-            title = title.replacingOccurrences(
-                of: #"\s+#+\s*$"#,
-                with: "",
-                options: .regularExpression
-            )
-            title = title.replacingOccurrences(
-                of: #"[*_`~\[\]]"#,
-                with: "",
-                options: .regularExpression
-            )
-
-            guard !title.isEmpty else { continue }
-            headings.append(
-                OutlineHeading(
-                    id: "heading-\(headings.count)",
-                    level: hashCount,
-                    title: title
-                )
-            )
-        }
-
-        return headings
-    }
 }

@@ -93,7 +93,7 @@ enum MarkdownFolderSearch {
         let ranked = try fileURLs(in: items).compactMap { url -> RankedResult? in
             try Task.checkCancellation()
 
-            let path = url.standardizedFileURL.path
+            let path = MarkdownFileIO.canonicalURL(for: url).path
             let content: String
             if let override = contentOverrides[path] {
                 content = override

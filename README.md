@@ -101,6 +101,7 @@ Run the test suite:
 ```bash
 swift test
 python3 -m unittest discover -s site -p 'test_*.py'
+node --test Tests/Site/signup.test.cjs
 ```
 
 Build the Universal 2 app bundle used for local testing:

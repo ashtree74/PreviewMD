@@ -323,7 +323,7 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(state.currentDocument?.content, "# Changed outside PreviewMD\n")
     }
 
-    func testLiveReloadUpdatesCleanOpenDocument() throws {
+    func testLiveReloadUpdatesCleanOpenDocument() async throws {
         let state = try makeState()
         let fileURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("PreviewMD-live-\(UUID().uuidString).md")
@@ -332,7 +332,7 @@ final class AppStateTests: XCTestCase {
         state.open(url: fileURL)
 
         try "Written by another tool\n".write(to: fileURL, atomically: true, encoding: .utf8)
-        state.pollForExternalChanges()
+        await state.pollForExternalChanges()
 
         XCTAssertEqual(state.currentDocument?.content, "Written by another tool\n")
         XCTAssertFalse(state.currentDocument?.hasExternalChanges ?? true)
@@ -343,7 +343,7 @@ final class AppStateTests: XCTestCase {
         )
     }
 
-    func testLiveReloadNeverOverwritesUnsavedLocalChanges() throws {
+    func testLiveReloadNeverOverwritesUnsavedLocalChanges() async throws {
         let state = try makeState()
         let fileURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("PreviewMD-live-conflict-\(UUID().uuidString).md")
@@ -354,7 +354,7 @@ final class AppStateTests: XCTestCase {
         state.updateContent("Local edit\n", for: document.id, origin: .source)
 
         try "External edit\n".write(to: fileURL, atomically: true, encoding: .utf8)
-        state.pollForExternalChanges()
+        await state.pollForExternalChanges()
 
         XCTAssertEqual(state.currentDocument?.content, "Local edit\n")
         XCTAssertTrue(state.currentDocument?.hasExternalChanges == true)
@@ -368,7 +368,7 @@ final class AppStateTests: XCTestCase {
         let observation = state.objectWillChange.sink {
             publicationCount += 1
         }
-        state.pollForExternalChanges()
+        await state.pollForExternalChanges()
         withExtendedLifetime(observation) {
             XCTAssertEqual(
                 publicationCount,
@@ -378,7 +378,7 @@ final class AppStateTests: XCTestCase {
         }
     }
 
-    func testExternalChangeNavigationWrapsAndCanBeMarkedReviewed() throws {
+    func testExternalChangeNavigationWrapsAndCanBeMarkedReviewed() async throws {
         let state = try makeState()
         let fileURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("PreviewMD-review-\(UUID().uuidString).md")
@@ -396,7 +396,7 @@ final class AppStateTests: XCTestCase {
             atomically: true,
             encoding: .utf8
         )
-        state.pollForExternalChanges()
+        await state.pollForExternalChanges()
 
         XCTAssertEqual(state.currentDocument?.externalChangeReview?.hunks.count, 2)
         state.displayMode = .source
