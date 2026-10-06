@@ -25,9 +25,23 @@ sdk_version="$(plutil -extract Version raw -o - "$SDKROOT/SDKSettings.json")"
 # making native controls adopt the legacy appearance on newer macOS releases.
 build_options=(
   -c release --arch arm64 --arch x86_64 --disable-sandbox --sdk "$SDKROOT"
-  -Xlinker -platform_version -Xlinker macos
-  -Xlinker 14.0 -Xlinker "$sdk_version"
 )
+# Swift Build links through swiftc, which forwards -Xlinker itself. The older
+# Xcode backend puts these arguments directly into clang's OTHER_LDFLAGS.
+# Select the available backend explicitly and use its driver's flag syntax.
+swift_build_help="$(swift build --help)"
+if grep -Eq '^[[:space:]]+swiftbuild[[:space:]]' <<< "$swift_build_help"; then
+  build_options+=(
+    --build-system swiftbuild
+    -Xlinker -platform_version -Xlinker macos
+    -Xlinker 14.0 -Xlinker "$sdk_version"
+  )
+else
+  build_options+=(
+    --build-system xcode
+    -Xlinker "-Wl,-platform_version,macos,14.0,$sdk_version"
+  )
+fi
 
 verify_build_version() {
   local executable_path="$1"

@@ -104,7 +104,10 @@ the preview. Sidebar controls and the panel's view code had not changed.
 
 The build now passes the selected SDK explicitly and supplies the complete
 linker platform tuple: macOS, minimum 14.0, and the selected SDK version. It
-validates `LC_BUILD_VERSION` plus both architectures before replacing the
+selects Swift Build when available, using its Swift driver forwarding; older
+toolchains use the Xcode backend with clang's forwarding syntax. This prevents
+differences between the Xcode 26 and 27 defaults from changing linker arguments.
+It validates `LC_BUILD_VERSION` plus both architectures before replacing the
 application and after building Quick Look. The selected SDK version comes from
 its own metadata, including when `PREVIEWMD_SDKROOT` is supplied.
 
