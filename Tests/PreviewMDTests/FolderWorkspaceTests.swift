@@ -86,7 +86,7 @@ final class FolderWorkspaceTests: XCTestCase {
         let observation = state.objectWillChange.sink {
             publicationCount += 1
         }
-        state.pollForExternalChanges(now: .distantFuture)
+        await state.pollForExternalChanges(now: .distantFuture)
         try await Task.sleep(for: .milliseconds(150))
 
         withExtendedLifetime(observation) {

@@ -1,7 +1,7 @@
 import Foundation
 
-struct MarkdownFileFormat: Equatable {
-    enum LineEnding: Equatable {
+struct MarkdownFileFormat: Equatable, Sendable {
+    enum LineEnding: Equatable, Sendable {
         case lineFeed
         case carriageReturnLineFeed
         case carriageReturn
@@ -24,14 +24,16 @@ struct MarkdownFileFormat: Equatable {
     )
 }
 
-struct FileSnapshot: Equatable {
+struct FileSnapshot: Equatable, Sendable {
     let modificationDate: Date?
     let size: Int
     let fingerprint: UInt64
 
     static func capture(url: URL, data: Data? = nil) throws -> Self {
         let contents = try data ?? Data(contentsOf: url)
-        let values = try url.resourceValues(
+        // Resource values are cached on URL instances. Read fresh metadata after
+        // an atomic replacement rather than retaining the previous inode's values.
+        let values = try URL(fileURLWithPath: url.path).resourceValues(
             forKeys: [.contentModificationDateKey, .fileSizeKey]
         )
         return Self(
@@ -51,14 +53,22 @@ struct FileSnapshot: Equatable {
 }
 
 enum MarkdownFileIO {
-    struct ReadResult {
+    struct ReadResult: Sendable {
         let content: String
         let format: MarkdownFileFormat
         let snapshot: FileSnapshot
     }
 
-    static func read(from url: URL) throws -> ReadResult {
-        let data = try Data(contentsOf: url)
+    static func canonicalURL(for url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+
+    static func read(
+        from url: URL,
+        data suppliedData: Data? = nil,
+        snapshot suppliedSnapshot: FileSnapshot? = nil
+    ) throws -> ReadResult {
+        let data = try suppliedData ?? Data(contentsOf: url)
         let hasBOM = data.starts(with: [0xEF, 0xBB, 0xBF])
         let textData = hasBOM ? data.dropFirst(3) : data[...]
 
@@ -77,7 +87,7 @@ enum MarkdownFileIO {
                 lineEnding: lineEnding,
                 hasUTF8ByteOrderMark: hasBOM
             ),
-            snapshot: try FileSnapshot.capture(url: url, data: data)
+            snapshot: try suppliedSnapshot ?? FileSnapshot.capture(url: url, data: data)
         )
     }
 
@@ -104,8 +114,11 @@ enum MarkdownFileIO {
             data.insert(contentsOf: [0xEF, 0xBB, 0xBF], at: 0)
         }
 
-        try data.write(to: url, options: .atomic)
-        return try FileSnapshot.capture(url: url, data: data)
+        // Atomic writes replace their destination directory entry. Resolve a
+        // symlink first so saving updates its target and preserves the link.
+        let destination = canonicalURL(for: url)
+        try data.write(to: destination, options: .atomic)
+        return try FileSnapshot.capture(url: destination, data: data)
     }
 
     private static func dominantLineEnding(
