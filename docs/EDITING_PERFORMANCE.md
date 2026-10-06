@@ -88,7 +88,10 @@ Without both environment variables, the profiling test explicitly skips.
 The width policy follows jedrzejsieracki's #27 proposal: clamp the expanded
 minimum to available width, never below the collapsed readable minimum. Roomy
 surfaces retain the 220 px per-column target; narrow surfaces still scroll.
-The existing leading-gutter correction remains intact. The expansion action
+The existing leading-gutter correction remains intact. Available width also
+excludes space reserved by classic scrollbars; otherwise their stable gutter
+creates a 17 px overflow that is absent with overlay scrollbars. The expansion
+action
 sits above wide tables, away from their headers, with keyboard focus styling
 preserved.
 
@@ -96,7 +99,9 @@ preserved.
 sweeps 980/1800/520/980 pt windows and 902/560/480/902 pt reading widths using
 the showcase's four-column table. It checks the final article width, minimum
 and actual column widths, scroll extent, right edge, action/header separation
-and collapse. The six-column regression retains independent expansion and
+and collapse, plus a simulated classic-scrollbar inset without changing system
+preferences. CI also exercises real classic scrollbars. The six-column
+regression retains independent expansion and
 unchanged Markdown serialization.
 
 For deterministic policy checks, the test finishes CSS width transitions and

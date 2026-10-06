@@ -226,7 +226,8 @@ final class RendererAuditTests: XCTestCase, WKNavigationDelegate {
         var expanded = false
         for (windowWidth, readingWidth, expected) in [
             (980, 902, "near-fit"), (1800, 560, "roomy"),
-            (520, 480, "narrow"), (980, 902, "near-fit")
+            (520, 480, "narrow"), (980, 902, "near-fit"),
+            (980, 902, "classic")
         ] {
             window.setContentSize(NSSize(width: CGFloat(windowWidth), height: 700))
             webView.setFrameSize(NSSize(width: CGFloat(windowWidth), height: 700))
@@ -237,6 +238,11 @@ final class RendererAuditTests: XCTestCase, WKNavigationDelegate {
             let result = try await webView.callAsyncJavaScript(
                 """
                 window.previewmdSetLayout(readingWidth, false, 0, false);
+                if (forceScrollbarGutter) {
+                  // Reserve the same inline space as a classic scrollbar
+                  // without changing the Mac's global scrollbar preference.
+                  document.querySelector('.table-viewport').style.borderRight = '17px solid transparent';
+                }
                 await new Promise(resolve => setTimeout(resolve, 300));
                 // Headless WebKit can suspend animation frames. Finish the
                 // width transition and use the editor's public layout hook.
@@ -248,23 +254,25 @@ final class RendererAuditTests: XCTestCase, WKNavigationDelegate {
                 const viewport = wrapper.querySelector('.table-viewport');
                 const sizer = wrapper.querySelector('.table-sizer');
                 const gutter = parseFloat(wrapper.style.getPropertyValue('--table-leading-gutter'));
+                const scrollbarGutter = viewport.offsetWidth - viewport.clientWidth;
                 const shell = document.getElementById('preview-shell');
                 const shellStyle = getComputedStyle(shell);
                 const expectedArticleWidth = Math.min(readingWidth, shell.clientWidth - parseFloat(shellStyle.paddingLeft) - parseFloat(shellStyle.paddingRight));
                 return {
                   windowWidth: window.innerWidth,
                   articleWidth: article.getBoundingClientRect().width, expectedArticleWidth,
-                  available: wrapper.getBoundingClientRect().width - gutter,
+                  available: wrapper.getBoundingClientRect().width - gutter - scrollbarGutter,
+                  scrollbarGutter,
                   minimum: parseFloat(sizer.style.minWidth),
                   smallestColumn: Math.min(...Array.from(wrapper.querySelectorAll('th')).map(cell => cell.getBoundingClientRect().width)),
                   buttonBottom: wrapper.querySelector('.table-expand').getBoundingClientRect().bottom,
                   headerTop: wrapper.querySelector('th').getBoundingClientRect().top,
                   client: viewport.clientWidth, scroll: viewport.scrollWidth,
                   right: sizer.getBoundingClientRect().right,
-                  viewportRight: viewport.getBoundingClientRect().right,
+                  viewportRight: viewport.getBoundingClientRect().right - scrollbarGutter,
                   expanded: wrapper.querySelector('.table-expand').getAttribute('aria-expanded')
                 };
-                """, arguments: ["readingWidth": readingWidth, "expanded": expanded], contentWorld: .page
+                """, arguments: ["readingWidth": readingWidth, "expanded": expanded, "forceScrollbarGutter": expected == "classic"], contentWorld: .page
             )
             expanded = true
             let metrics = try XCTUnwrap(result as? [String: Any])
@@ -281,7 +289,8 @@ final class RendererAuditTests: XCTestCase, WKNavigationDelegate {
             XCTAssertLessThanOrEqual(metrics["buttonBottom"] as? Double ?? .infinity, metrics["headerTop"] as? Double ?? -.infinity,
                                      "The expansion action must not cover headers at any width")
             switch expected {
-            case "near-fit":
+            case "near-fit", "classic":
+                if expected == "classic" { XCTAssertGreaterThan(metrics["scrollbarGutter"] as? Int ?? 0, 0) }
                 XCTAssertGreaterThan(available, 576)
                 XCTAssertLessThan(available, 880)
                 XCTAssertEqual(client, scroll, "Near-fit table must fit: \(metrics)")
