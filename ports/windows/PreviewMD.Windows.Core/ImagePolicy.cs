@@ -26,6 +26,12 @@ public static class ImagePolicy
 {
     public const long MaximumBytes = 100L * 1024 * 1024;
 
+    internal static Func<string, FileSystemInfo?> DirectoryLinkTarget { get; set; } =
+        static path => Directory.ResolveLinkTarget(path, returnFinalTarget: true);
+
+    internal static Func<string, FileSystemInfo?> FileLinkTarget { get; set; } =
+        static path => File.ResolveLinkTarget(path, returnFinalTarget: true);
+
     private static readonly HashSet<string> AllowedExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         "svg",
@@ -110,16 +116,42 @@ public static class ImagePolicy
 
     private static string FollowLink(string path)
     {
-        FileSystemInfo? link = null;
-        if (Directory.Exists(path))
-            link = Directory.ResolveLinkTarget(path, returnFinalTarget: true);
-        else if (File.Exists(path))
-            link = File.ResolveLinkTarget(path, returnFinalTarget: true);
+        var fullPath = Path.GetFullPath(path);
+        if (IsVolumeRoot(fullPath))
+            return fullPath;
 
-        if (link is null || link.FullName.Length == 0)
-            return Path.GetFullPath(path);
+        try
+        {
+            FileSystemInfo? link = null;
+            if (Directory.Exists(fullPath))
+                link = DirectoryLinkTarget(fullPath);
+            else if (File.Exists(fullPath))
+                link = FileLinkTarget(fullPath);
 
-        return Path.GetFullPath(link.FullName);
+            if (link is null || link.FullName.Length == 0)
+                return fullPath;
+
+            return Path.GetFullPath(link.FullName);
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return fullPath;
+        }
+    }
+
+    private static bool IsVolumeRoot(string fullPath)
+    {
+        var root = Path.GetPathRoot(fullPath);
+        if (string.IsNullOrEmpty(root))
+            return false;
+
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        return string.Equals(
+            Path.TrimEndingDirectorySeparator(fullPath),
+            Path.TrimEndingDirectorySeparator(root),
+            comparison);
     }
 
     private static string Resolve(string source, string rootFull)

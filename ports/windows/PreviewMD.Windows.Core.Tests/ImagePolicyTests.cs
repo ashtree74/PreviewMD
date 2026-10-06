@@ -63,6 +63,85 @@ public class ImagePolicyTests
     }
 
     [Fact]
+    public void DirectoryNotFoundFromLinkQueryStillAllowsRelativePng()
+    {
+        var notes = Directory.CreateTempSubdirectory("previewmd-link-miss-");
+        var picture = Path.Combine(notes.FullName, "pic.png");
+        var png = new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 };
+        File.WriteAllBytes(picture, png);
+        var previousDirectory = ImagePolicy.DirectoryLinkTarget;
+
+        try
+        {
+            ImagePolicy.DirectoryLinkTarget = path =>
+            {
+                if (SamePath(path, notes.FullName))
+                    throw new DirectoryNotFoundException(path);
+                return Directory.ResolveLinkTarget(path, returnFinalTarget: true);
+            };
+
+            var allowed = ImagePolicy.Decide("pic.png", notes.FullName, ImageInspection.Read);
+            var allowedPath = Assert.IsType<ImageDecision.Allowed>(allowed);
+            Assert.Equal(png, File.ReadAllBytes(allowedPath.Path));
+        }
+        finally
+        {
+            ImagePolicy.DirectoryLinkTarget = previousDirectory;
+            notes.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public void VolumeRootLinkFailureStillAllowsRelativePngAndRefusesJunctionEscape()
+    {
+        var parent = Directory.CreateTempSubdirectory("previewmd-volume-");
+        var notes = Directory.CreateDirectory(Path.Combine(parent.FullName, "notes"));
+        var picture = Path.Combine(notes.FullName, "pic.png");
+        var png = new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 };
+        File.WriteAllBytes(picture, png);
+        var outside = Path.Combine(parent.FullName, "secret.png");
+        File.WriteAllBytes(outside, new byte[] { 1, 2, 3, 4 });
+        var directoryLink = Path.Combine(notes.FullName, "out");
+        var volumeRoot = Path.GetPathRoot(notes.FullName) ?? "";
+        var previousDirectory = ImagePolicy.DirectoryLinkTarget;
+
+        try
+        {
+            ImagePolicy.DirectoryLinkTarget = path =>
+            {
+                if (SamePath(path, volumeRoot))
+                    throw new DirectoryNotFoundException(path);
+                return Directory.ResolveLinkTarget(path, returnFinalTarget: true);
+            };
+
+            var allowed = ImagePolicy.Decide("pic.png", notes.FullName, ImageInspection.Read);
+            var allowedPath = Assert.IsType<ImageDecision.Allowed>(allowed);
+            Assert.Equal(png, File.ReadAllBytes(allowedPath.Path));
+
+            CreateDirectoryLink(directoryLink, parent.FullName);
+            var escaped = ImagePolicy.Decide("out/secret.png", notes.FullName, ImageInspection.Read);
+            Assert.Equal(new ImageDecision.Refused(ImageRefusal.EscapesJail), escaped);
+        }
+        finally
+        {
+            ImagePolicy.DirectoryLinkTarget = previousDirectory;
+            RemoveLink(directoryLink);
+            parent.Delete(recursive: true);
+        }
+    }
+
+    private static bool SamePath(string left, string right)
+    {
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        return string.Equals(
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)),
+            comparison);
+    }
+
+    [Fact]
     public void DocumentFolderAllowsARelativeImageAndRefusesEscape()
     {
         var parent = Directory.CreateTempSubdirectory("previewmd-jail-");
