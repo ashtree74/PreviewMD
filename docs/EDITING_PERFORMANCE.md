@@ -129,6 +129,11 @@ then passed after the fixes. Both reviewers repeated their review of the
 resulting patch and found no unresolved findings in scope. This is independent
 agent review, not a GitHub approval submission.
 
+CI also exposed an existing scroll-publication test that waited a fixed 50 ms
+instead of observing completion. It now keeps its native window alive, awaits
+the actual callback for the expected logical line and retains the same line
+accuracy assertion. Missing or incorrect publication still fails the test.
+
 The full local suite passed: 177 XCTest and 5 Swift Testing tests, with the
 opt-in profiler explicitly skipped in the normal run. The profiler passed
 separately on baseline and patch, and the after report was refreshed after

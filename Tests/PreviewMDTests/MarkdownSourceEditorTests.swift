@@ -260,7 +260,7 @@ final class MarkdownSourceEditorTests: XCTestCase {
     }
 
     @MainActor
-    func testSourceScrollPublicationUsesLogicalLineWhenLinesWrap() throws {
+    func testSourceScrollPublicationUsesLogicalLineWhenLinesWrap() async throws {
         _ = NSApplication.shared
         let source = (0..<80)
             .map { "Line \($0) " + String(repeating: "wrapped content ", count: 5) }
@@ -282,7 +282,9 @@ final class MarkdownSourceEditorTests: XCTestCase {
             backing: .buffered,
             defer: false
         )
+        window.isReleasedWhenClosed = false
         window.contentView = host
+        defer { window.close() }
         host.frame = window.contentView!.bounds
         host.layoutSubtreeIfNeeded()
         synchronizer.attachPreview(preview, documentID: documentID)
@@ -293,6 +295,13 @@ final class MarkdownSourceEditorTests: XCTestCase {
         let textContainer = try XCTUnwrap(textView.textContainer)
         layoutManager.ensureLayout(for: textContainer)
         let targetLine = 30
+        let published = expectation(description: "Source scroll position reaches the preview")
+        preview.onScrollPosition = { [weak preview] position in
+            if abs(position.sourceLine - Double(targetLine)) <= 1 {
+                preview?.onScrollPosition = nil
+                published.fulfill()
+            }
+        }
         let targetRange = (source as NSString).range(of: "Line \(targetLine) ")
         let glyphIndex = layoutManager.glyphIndexForCharacter(
             at: targetRange.location
@@ -309,7 +318,7 @@ final class MarkdownSourceEditorTests: XCTestCase {
             )
         )
         scrollView.reflectScrolledClipView(scrollView.contentView)
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        await fulfillment(of: [published], timeout: 2)
 
         XCTAssertEqual(
             preview.scrollPositions.last?.sourceLine ?? .nan,
