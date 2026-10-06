@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using PreviewMD.Windows.Core;
 using Xunit;
 
@@ -59,6 +60,93 @@ public class ImagePolicyTests
         var decision = ImagePolicy.Decide("readme.md", Root, _ => new FileFacts(true, 20, ".md"));
 
         Assert.Equal(new ImageDecision.Refused(ImageRefusal.UnsupportedType), decision);
+    }
+
+    [Fact]
+    public void DocumentFolderAllowsARelativeImageAndRefusesEscape()
+    {
+        var parent = Directory.CreateTempSubdirectory("previewmd-jail-");
+        var notes = Directory.CreateDirectory(Path.Combine(parent.FullName, "notes"));
+        var img = Directory.CreateDirectory(Path.Combine(notes.FullName, "img"));
+        var picture = Path.Combine(img.FullName, "pic.png");
+        var png = new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 };
+        File.WriteAllBytes(picture, png);
+        var outside = Path.Combine(parent.FullName, "secret.png");
+        File.WriteAllBytes(outside, new byte[] { 1, 2, 3, 4 });
+        var fileLink = Path.Combine(img.FullName, "escape.png");
+        var directoryLink = Path.Combine(notes.FullName, "out");
+
+        try
+        {
+            var allowed = ImagePolicy.Decide("img/pic.png", notes.FullName, ImageInspection.Read);
+            var allowedPath = Assert.IsType<ImageDecision.Allowed>(allowed);
+            Assert.Equal(png, File.ReadAllBytes(allowedPath.Path));
+
+            var parentEscape = ImagePolicy.Decide("../secret.png", notes.FullName, ImageInspection.Read);
+            Assert.Equal(new ImageDecision.Refused(ImageRefusal.EscapesJail), parentEscape);
+
+            var absoluteEscape = ImagePolicy.Decide(outside, notes.FullName, ImageInspection.Read);
+            Assert.Equal(new ImageDecision.Refused(ImageRefusal.EscapesJail), absoluteEscape);
+
+            CreateFileLink(fileLink, outside);
+            var fileEscape = ImagePolicy.Decide("img/escape.png", notes.FullName, ImageInspection.Read);
+            Assert.Equal(new ImageDecision.Refused(ImageRefusal.EscapesJail), fileEscape);
+
+            CreateDirectoryLink(directoryLink, parent.FullName);
+            var directoryEscape = ImagePolicy.Decide("out/secret.png", notes.FullName, ImageInspection.Read);
+            Assert.Equal(new ImageDecision.Refused(ImageRefusal.EscapesJail), directoryEscape);
+        }
+        finally
+        {
+            RemoveLink(directoryLink);
+            RemoveLink(fileLink);
+            parent.Delete(recursive: true);
+        }
+    }
+
+    private static void CreateFileLink(string linkPath, string targetPath)
+    {
+        File.CreateSymbolicLink(linkPath, targetPath);
+    }
+
+    private static void CreateDirectoryLink(string linkPath, string targetPath)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Directory.CreateSymbolicLink(linkPath, targetPath);
+            return;
+        }
+
+        try
+        {
+            Directory.CreateSymbolicLink(linkPath, targetPath);
+            return;
+        }
+        catch (IOException)
+        {
+        }
+
+        using var process = new Process();
+        process.StartInfo.FileName = "cmd.exe";
+        process.StartInfo.Arguments = "/c mklink /J \"" + linkPath + "\" \"" + targetPath + "\"";
+        process.StartInfo.UseShellExecute = false;
+        process.StartInfo.CreateNoWindow = true;
+        process.Start();
+        process.WaitForExit();
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException("The directory junction was not created.");
+    }
+
+    private static void RemoveLink(string linkPath)
+    {
+        if (Directory.Exists(linkPath))
+        {
+            Directory.Delete(linkPath, recursive: false);
+            return;
+        }
+
+        if (File.Exists(linkPath))
+            File.Delete(linkPath);
     }
 
     [Fact]
