@@ -1,0 +1,7 @@
+ts	phase	decision	why	evidence	result
+2026-10-06T23:00:02Z	start	Started the Adam review follow-up on a new branch	The operator asked for a fresh branch, a decision trail, and no writes to ashtree74	agent bc-93c3eb83-3452-58ce-a1bb-84e08e3823bf	open
+2026-10-06T23:00:02Z	pins	Reproduced 15 renderer hashes as CRLF conversions of LF Git bytes	An LF checkout must fail the manifest until the pins match the blobs	ports/windows/renderer.sha256	reproduced
+2026-10-06T23:00:02Z	sync	Merged upstream main with a merge commit	Current main carries the 1.8 and 1.9 renderer edits and merge-tree showed no conflicts	commit b7aa38deb68652a80a9832403fb0ea5e3d759fb2	merged
+2026-10-06T23:00:02Z	models	Wrote pstack roles to grok-4.7-xhigh only	The operator forbade Claude, GPT, Gemini, Auto, and fast variants for heavy work	/home/ubuntu/.cursor/rules/pstack-models.mdc	written
+2026-10-06T23:00:02Z	confinement	Will canonicalize image paths with ResolveLinkTarget before the jail check	The documented junction hole is a final path outside the folder, and macOS has no matching jail test to copy	ports/windows/PreviewMD.Windows.Core/ImagePolicy.cs	open
+2026-10-06T23:01:17Z	pins	Regenerated renderer.sha256 from HEAD blobs and set eol=lf	Fifteen text pins matched CRLF, not the Git bytes. The pin script exits 1 when welcome.md is CRLF	ports/windows/pin-renderer.py	checksum tests passed 3

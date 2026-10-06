@@ -47,6 +47,29 @@ public class RendererChecksumTests
         Assert.Equal(expected, RendererChecksum.Format(directory));
     }
 
+    [Fact]
+    public void RendererTextFilesUseLfBytes()
+    {
+        var directory = Path.Combine(RepoRoot(), "Sources", "PreviewMD", "Resources", "Renderer");
+        var textExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ".js",
+            ".css",
+            ".md",
+            ".svg",
+            ".html",
+        };
+
+        foreach (var file in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
+        {
+            if (!textExtensions.Contains(Path.GetExtension(file)))
+                continue;
+
+            var bytes = File.ReadAllBytes(file);
+            Assert.DoesNotContain((byte)'\r', bytes);
+        }
+    }
+
     private static string RepoRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

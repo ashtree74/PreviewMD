@@ -30,7 +30,7 @@ An unpackaged build copies the Windows App SDK next to the executable, so `dotne
 
 ## What the slice keeps
 
-The renderer in `Sources/PreviewMD/Resources/Renderer/` is copied unchanged. `ports/windows/renderer.sha256` pins every file. The build fails when the source tree or the copy disagrees with that list.
+The renderer in `Sources/PreviewMD/Resources/Renderer/` is copied unchanged. `ports/windows/renderer.sha256` pins every file to the Git blob bytes. Text files in that folder check out as LF, so a Windows checkout does not rewrite them to CRLF before the hash. Regenerate the pin with `python3 ports/windows/pin-renderer.py`. The script refuses a work tree whose bytes differ from HEAD. The build fails when the source tree or the copy disagrees with that list.
 
 The shell calls `window.previewmdRender` with the same field names as the macOS app. Relative images use `previewmd-local-image`. The shell serves a file only when the path stays inside the open document's folder, the file is an image, and it is at most 100 MB. `http`, `https`, and `mailto` links open with `Launcher.LaunchUriAsync`. They do not render inside the window.
 
