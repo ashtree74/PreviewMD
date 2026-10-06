@@ -5,7 +5,6 @@ project_dir="$(cd "$(dirname "$0")/.." && pwd)"
 app_dir="$project_dir/dist/PreviewMD.app"
 contents_dir="$app_dir/Contents"
 legal_dir="$contents_dir/Resources/Legal"
-build_dir="$project_dir/.build/apple/Products/Release"
 quicklook_dir="$contents_dir/PlugIns/PreviewMDQuickLook.appex"
 quicklook_contents_dir="$quicklook_dir/Contents"
 quicklook_build_dir="$project_dir/.build/quicklook"
@@ -20,11 +19,15 @@ export SDKROOT="${PREVIEWMD_SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
 export SWIFTPM_MODULECACHE_OVERRIDE="$project_dir/.build/ModuleCache"
 export CLANG_MODULE_CACHE_PATH="$project_dir/.build/ModuleCache"
 
-swift build \
-  -c release \
-  --arch arm64 \
-  --arch x86_64 \
-  --disable-sandbox
+build_options=(-c release --arch arm64 --arch x86_64 --disable-sandbox)
+swift build "${build_options[@]}"
+# SwiftPM's output directory differs between toolchain/build-system versions.
+# Ask the same build configuration instead of accidentally packaging an older
+# product left in .build/apple/Products/Release.
+build_dir="$(swift build "${build_options[@]}" --show-bin-path)"
+for architecture in arm64 x86_64; do
+  lipo "$build_dir/PreviewMD" -verify_arch "$architecture"
+done
 
 rm -rf "$app_dir" "$quicklook_build_dir"
 mkdir -p \
