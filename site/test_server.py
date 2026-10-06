@@ -51,7 +51,7 @@ class PreviewMDLandingContentTests(unittest.TestCase):
         self.assertIn("save your own named visual presets", normalized)
         self.assertIn("named visual presets", normalized)
         self.assertIn("body and heading fonts", normalized)
-        self.assertIn("styles.css?v=db-7", html)
+        self.assertIn("styles.css?v=db-8", html)
         self.assertIn(".spec-custom", stylesheet)
         self.assertIn(".preset-swatches", stylesheet)
 
@@ -74,7 +74,7 @@ class PreviewMDLandingContentTests(unittest.TestCase):
         self.assertEqual(app_info["CFBundleShortVersionString"], "1.7")
         self.assertEqual(app_info["CFBundleVersion"], "11")
         self.assertIn("v1.7 (build 11)", html)
-        self.assertIn('main.js?v=db-11', html)
+        self.assertIn('main.js?v=db-12', html)
         self.assertNotIn("PreviewMD-1.6-10-macOS.dmg", html)
         self.assertNotIn("PreviewMD-1.6-10-macOS.dmg", javascript)
         self.assertNotIn("PreviewMD-1.5-7-macOS.zip", html)

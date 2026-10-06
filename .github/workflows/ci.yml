@@ -33,6 +33,9 @@ jobs:
       - name: Run landing-page tests
         run: python3 -m unittest discover -s site -p 'test_*.py'
 
+      - name: Run signup lifecycle tests
+        run: node --test Tests/Site/signup.test.cjs
+
       - name: Check scripts and property lists
         run: |
           zsh -n scripts/*.sh
