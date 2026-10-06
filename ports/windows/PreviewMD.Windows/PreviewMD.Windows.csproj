@@ -55,13 +55,26 @@
     <RendererSource>$(MSBuildProjectDirectory)\..\..\..\Sources\PreviewMD\Resources\Renderer</RendererSource>
     <RendererManifest>$(MSBuildProjectDirectory)\..\renderer.sha256</RendererManifest>
     <VerifyRendererScript>$(MSBuildProjectDirectory)\..\verify-renderer.ps1</VerifyRendererScript>
+    <RendererShellProbe Condition="'$(OS)' == 'Windows_NT'">where pwsh &gt;NUL</RendererShellProbe>
+    <RendererShellProbe Condition="'$(OS)' != 'Windows_NT'">command -v pwsh >/dev/null</RendererShellProbe>
   </PropertyGroup>
 
-  <Target Name="VerifyRendererSource" BeforeTargets="BeforeBuild">
-    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(VerifyRendererScript)&quot; -Directory &quot;$(RendererSource)&quot; -Manifest &quot;$(RendererManifest)&quot;" />
+  <Target Name="ResolveRendererShell">
+    <Exec Condition="'$(RendererShell)' == ''" Command="$(RendererShellProbe)" IgnoreExitCode="true">
+      <Output TaskParameter="ExitCode" PropertyName="_PwshWhereExit" />
+    </Exec>
+    <PropertyGroup Condition="'$(RendererShell)' == ''">
+      <RendererShell Condition="'$(_PwshWhereExit)' == '0'">pwsh</RendererShell>
+      <RendererShell Condition="'$(RendererShell)' == ''">powershell.exe</RendererShell>
+    </PropertyGroup>
+    <Message Importance="high" Text="Renderer checksum shell is $(RendererShell)." />
   </Target>
 
-  <Target Name="VerifyRendererOutput" AfterTargets="Build">
-    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(VerifyRendererScript)&quot; -Directory &quot;$(TargetDir)WebAssets\renderer&quot; -Manifest &quot;$(RendererManifest)&quot;" />
+  <Target Name="VerifyRendererSource" BeforeTargets="BeforeBuild" DependsOnTargets="ResolveRendererShell">
+    <Exec Command="&quot;$(RendererShell)&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;$(VerifyRendererScript)&quot; -Directory &quot;$(RendererSource)&quot; -Manifest &quot;$(RendererManifest)&quot;" />
+  </Target>
+
+  <Target Name="VerifyRendererOutput" AfterTargets="Build" DependsOnTargets="ResolveRendererShell">
+    <Exec Command="&quot;$(RendererShell)&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;$(VerifyRendererScript)&quot; -Directory &quot;$(TargetDir)WebAssets\renderer&quot; -Manifest &quot;$(RendererManifest)&quot;" />
   </Target>
 </Project>

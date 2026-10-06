@@ -28,6 +28,8 @@ dotnet run --project ports/windows/PreviewMD.Windows/PreviewMD.Windows.csproj --
 
 An unpackaged build copies the Windows App SDK next to the executable, so `dotnet run` starts on a machine that does not already have that runtime. To build an MSIX instead, pass `-p:WindowsPackageType=MSIX`. That package expects the Windows App Runtime.
 
+The build checks the renderer with `ports/windows/verify-renderer.ps1`. It runs `pwsh` when that command is on PATH. It uses `powershell.exe` only when `pwsh` is missing. Windows PowerShell 5.1 does not find `Get-FileHash` when `PSModulePath` lists PowerShell 7 modules first. Pass `-p:RendererShell=pwsh` to choose the host yourself.
+
 ## What the slice keeps
 
 The renderer in `Sources/PreviewMD/Resources/Renderer/` is copied unchanged. `ports/windows/renderer.sha256` pins every file to the Git blob bytes. Text files in that folder check out as LF, so a Windows checkout does not rewrite them to CRLF before the hash. Regenerate the pin with `python3 ports/windows/pin-renderer.py`. The script refuses a work tree whose bytes differ from HEAD. The build fails when the source tree or the copy disagrees with that list.
