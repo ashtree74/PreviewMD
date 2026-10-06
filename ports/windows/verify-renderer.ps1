@@ -6,7 +6,8 @@ param(
 $ErrorActionPreference = "Stop"
 
 function Get-RendererLines([string]$root, [string]$manifestPath) {
-    $fullRoot = [System.IO.Path]::GetFullPath($root).TrimEnd('\')
+    $separator = [System.IO.Path]::DirectorySeparatorChar
+    $fullRoot = [System.IO.Path]::GetFullPath($root).TrimEnd($separator)
     $expected = New-Object System.Collections.Generic.List[string]
     foreach ($line in [System.IO.File]::ReadAllLines($manifestPath)) {
         if ($line.Length -gt 0) {
@@ -19,7 +20,7 @@ function Get-RendererLines([string]$root, [string]$manifestPath) {
         if (-not $file.StartsWith($fullRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
             throw "renderer file is outside the tree: $file"
         }
-        $relative = $file.Substring($fullRoot.Length).TrimStart('\').Replace('\', '/')
+        $relative = $file.Substring($fullRoot.Length).TrimStart($separator).Replace('\', '/')
         $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
         $actual.Add("$hash  $relative")
     }
