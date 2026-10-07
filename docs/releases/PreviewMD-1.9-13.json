@@ -3,7 +3,7 @@
   "version": "1.9",
   "build": "13",
   "release_date": "2026-10-06",
-  "distribution": "local installer; no GitHub Release or landing-page download change",
+  "distribution": "public landing-page download; no GitHub Release",
   "source_revision": "f8c4fdb23e758dd46b5d8c7dc15296dcfb6d84ab",
   "fixes_main_revision": "bef87f24b1a49ec25e6aad3b430226a91ea4f99f",
   "bundle_identifier": "pl.jesion.previewmd",
@@ -49,7 +49,7 @@
       "sha256": "8404a6157137ad7819f94d7f6a86f61892a0dc6dd1688cc9bbe7bebd514f9feb"
     }
   ],
-  "repository_installer": "dist/PreviewMD-1.9-13-macOS.dmg",
+  "repository_installer": "site/PreviewMD-1.9-13-macOS.dmg",
   "repository_fallback_archive": "dist/PreviewMD-1.9-13-macOS.zip",
   "repository_application": "dist/releases/PreviewMD-1.9-13/PreviewMD.app",
   "verification": {
@@ -59,5 +59,11 @@
     "bundled_renderer_and_legal_files_match_source": true,
     "additional_installer_copy_sha256_matches": true,
     "previous_release_preserved": true
+  },
+  "local_installer": "dist/PreviewMD-1.9-13-macOS.dmg",
+  "publication": {
+    "date": "2026-10-07",
+    "site_url": "https://experiments.frontierslab.ai/previewmd/",
+    "download_url": "https://experiments.frontierslab.ai/previewmd/PreviewMD-1.9-13-macOS.dmg"
   }
 }
