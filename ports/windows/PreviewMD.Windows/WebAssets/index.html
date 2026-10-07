@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <link rel="stylesheet" href="renderer/katex.min.css">
+  <link rel="stylesheet" href="renderer/renderer.css">
+</head>
+<body>
+  <div id="reading-progress"></div>
+  <div id="top-blur" aria-hidden="true"></div>
+  <main id="preview-shell" aria-live="polite">
+    <article id="preview-document"></article>
+  </main>
+  <div id="render-error" hidden></div>
+  <script>
+    window.previewmdLocalImageScheme = "previewmd-local-image";
+    document.addEventListener("keydown", function (event) {
+      if (!event.ctrlKey || event.altKey || event.shiftKey || event.metaKey) return;
+      var message = event.key === "o" || event.key === "O" ? "open"
+        : event.key === "w" || event.key === "W" ? "close"
+        : "";
+      if (!message) return;
+      event.preventDefault();
+      if (window.chrome && window.chrome.webview) window.chrome.webview.postMessage(message);
+    });
+  </script>
+  <script src="renderer/markdown-it.min.js"></script>
+  <script src="renderer/markdown-it-footnote.min.js"></script>
+  <script src="renderer/highlight.min.js"></script>
+  <script src="renderer/katex.min.js"></script>
+  <script src="renderer/auto-render.min.js"></script>
+  <script src="renderer/mermaid.min.js"></script>
+  <script src="renderer/renderer.js"></script>
+  <script src="renderer/diagram-editor.js"></script>
+  <script src="renderer/editor.js"></script>
+</body>
+</html>

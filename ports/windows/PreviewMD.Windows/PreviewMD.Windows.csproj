@@ -1,0 +1,80 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>PreviewMD.Windows</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>x64;ARM64</Platforms>
+    <Platform Condition="'$(Platform)' == '' or '$(Platform)' == 'AnyCPU'">x64</Platform>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <UseWinUI>true</UseWinUI>
+    <WinUISDKReferences>false</WinUISDKReferences>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <WindowsPackageType Condition="'$(WindowsPackageType)' == ''">None</WindowsPackageType>
+    <WindowsAppSDKSelfContained Condition="'$(WindowsPackageType)' != 'MSIX'">true</WindowsAppSDKSelfContained>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Manifest Include="$(ApplicationManifest)" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(DisableMsixProjectCapabilityAddedByProject)' != 'true' and '$(EnableMsixTooling)' == 'true'">
+    <ProjectCapability Include="Msix" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.250108002" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.1742" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PreviewMD.Windows.Core\PreviewMD.Windows.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="WebAssets\index.html" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\StoreLogo.png" />
+    <Content Include="Assets\Square150x150Logo.png" />
+    <Content Include="Assets\Square44x44Logo.png" />
+    <Content Include="..\..\..\LICENSE" Link="LICENSE" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\..\..\NOTICE" Link="NOTICE" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\..\..\THIRD_PARTY_NOTICES.md" Link="THIRD_PARTY_NOTICES.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\..\..\Sources\PreviewMD\Resources\Renderer\**\*">
+      <Link>WebAssets\renderer\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
+  <PropertyGroup>
+    <RendererSource>$(MSBuildProjectDirectory)\..\..\..\Sources\PreviewMD\Resources\Renderer</RendererSource>
+    <RendererManifest>$(MSBuildProjectDirectory)\..\renderer.sha256</RendererManifest>
+    <VerifyRendererScript>$(MSBuildProjectDirectory)\..\verify-renderer.ps1</VerifyRendererScript>
+    <RendererShellProbe Condition="'$(OS)' == 'Windows_NT'">where pwsh &gt;NUL</RendererShellProbe>
+    <RendererShellProbe Condition="'$(OS)' != 'Windows_NT'">command -v pwsh >/dev/null</RendererShellProbe>
+  </PropertyGroup>
+
+  <Target Name="ResolveRendererShell">
+    <Exec Condition="'$(RendererShell)' == ''" Command="$(RendererShellProbe)" IgnoreExitCode="true">
+      <Output TaskParameter="ExitCode" PropertyName="_PwshWhereExit" />
+    </Exec>
+    <PropertyGroup Condition="'$(RendererShell)' == ''">
+      <RendererShell Condition="'$(_PwshWhereExit)' == '0'">pwsh</RendererShell>
+      <RendererShell Condition="'$(RendererShell)' == ''">powershell.exe</RendererShell>
+    </PropertyGroup>
+    <Message Importance="high" Text="Renderer checksum shell is $(RendererShell)." />
+  </Target>
+
+  <Target Name="VerifyRendererSource" BeforeTargets="BeforeBuild" DependsOnTargets="ResolveRendererShell">
+    <Exec Command="&quot;$(RendererShell)&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;$(VerifyRendererScript)&quot; -Directory &quot;$(RendererSource)&quot; -Manifest &quot;$(RendererManifest)&quot;" />
+  </Target>
+
+  <Target Name="VerifyRendererOutput" AfterTargets="Build" DependsOnTargets="ResolveRendererShell">
+    <Exec Command="&quot;$(RendererShell)&quot; -NoProfile -ExecutionPolicy Bypass -File &quot;$(VerifyRendererScript)&quot; -Directory &quot;$(TargetDir)WebAssets\renderer&quot; -Manifest &quot;$(RendererManifest)&quot;" />
+  </Target>
+</Project>

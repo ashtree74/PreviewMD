@@ -1,0 +1,34 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PreviewMD.Windows.Core", "PreviewMD.Windows.Core\PreviewMD.Windows.Core.csproj", "{DF83C438-F5EF-4CCE-89AC-945020389E42}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PreviewMD.Windows.Core.Tests", "PreviewMD.Windows.Core.Tests\PreviewMD.Windows.Core.Tests.csproj", "{07A5564B-9BA2-4CF6-9FE7-995AD6EA3E49}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PreviewMD.Windows", "PreviewMD.Windows\PreviewMD.Windows.csproj", "{0C99E012-077B-4258-B566-487881713454}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{DF83C438-F5EF-4CCE-89AC-945020389E42}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DF83C438-F5EF-4CCE-89AC-945020389E42}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DF83C438-F5EF-4CCE-89AC-945020389E42}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DF83C438-F5EF-4CCE-89AC-945020389E42}.Release|Any CPU.Build.0 = Release|Any CPU
+		{07A5564B-9BA2-4CF6-9FE7-995AD6EA3E49}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{07A5564B-9BA2-4CF6-9FE7-995AD6EA3E49}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{07A5564B-9BA2-4CF6-9FE7-995AD6EA3E49}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{07A5564B-9BA2-4CF6-9FE7-995AD6EA3E49}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0C99E012-077B-4258-B566-487881713454}.Debug|Any CPU.ActiveCfg = Debug|x64
+		{0C99E012-077B-4258-B566-487881713454}.Debug|Any CPU.Build.0 = Debug|x64
+		{0C99E012-077B-4258-B566-487881713454}.Release|Any CPU.ActiveCfg = Release|x64
+		{0C99E012-077B-4258-B566-487881713454}.Release|Any CPU.Build.0 = Release|x64
+	EndGlobalSection
+EndGlobal
