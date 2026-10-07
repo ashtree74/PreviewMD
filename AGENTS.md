@@ -250,11 +250,11 @@ spctl --assess --type open --context context:primary-signature --verbose=4 \
   dist/PreviewMD-<version>-<build>-macOS.dmg
 ```
 
-The most recently accepted local release is PreviewMD `1.9 (13)`. Its application
+The most recently accepted release is PreviewMD `1.9 (13)`. Its application
 notarization submission is `948b4107-14ea-4381-9b05-28d22af3ac7d`; the final
 DMG submission is `9dc40a47-728c-49c1-bda7-3dd551090948`. Its release receipt is
-`docs/releases/PreviewMD-1.9-13.json`. The public landing-page download remains
-at `1.8 (12)` until a separate public publication is requested.
+`docs/releases/PreviewMD-1.9-13.json`. The public landing-page download is
+`1.9 (13)`, using that same accepted and stapled DMG.
 
 ## Versioning
 

@@ -17,7 +17,7 @@ import server as landing
 
 class PreviewMDLandingContentTests(unittest.TestCase):
     analytics_id = "G-8YXDM1JJH2"
-    release_archive = "PreviewMD-1.8-12-macOS.dmg"
+    release_archive = "PreviewMD-1.9-13-macOS.dmg"
     site_dir = Path(__file__).resolve().parent
 
     def test_editing_is_presented_as_a_core_capability(self) -> None:
@@ -61,7 +61,7 @@ class PreviewMDLandingContentTests(unittest.TestCase):
         # The working app may be a newer local release. Public download metadata
         # must describe the exact installer that visitors can currently download.
         release_info = json.loads(
-            (self.site_dir.parent / "docs/releases/PreviewMD-1.8-12.json").read_text(
+            (self.site_dir.parent / "docs/releases/PreviewMD-1.9-13.json").read_text(
                 encoding="utf-8"
             )
         )
@@ -75,8 +75,8 @@ class PreviewMDLandingContentTests(unittest.TestCase):
             f'const DOWNLOAD_FILE = "{self.release_archive}";',
             javascript,
         )
-        self.assertEqual(release_info["version"], "1.8")
-        self.assertEqual(release_info["build"], "12")
+        self.assertEqual(release_info["version"], "1.9")
+        self.assertEqual(release_info["build"], "13")
         self.assertEqual(
             release_info["repository_installer"], f"site/{self.release_archive}"
         )
@@ -90,7 +90,9 @@ class PreviewMDLandingContentTests(unittest.TestCase):
         installer = (self.site_dir / self.release_archive).read_bytes()
         self.assertEqual(len(installer), artifact["size_bytes"])
         self.assertEqual(hashlib.sha256(installer).hexdigest(), artifact["sha256"])
-        self.assertIn('main.js?v=db-13', html)
+        self.assertIn('main.js?v=db-14', html)
+        self.assertNotIn("PreviewMD-1.8-12-macOS.dmg", html)
+        self.assertNotIn("PreviewMD-1.8-12-macOS.dmg", javascript)
         self.assertNotIn("PreviewMD-1.6-10-macOS.dmg", html)
         self.assertNotIn("PreviewMD-1.6-10-macOS.dmg", javascript)
         self.assertNotIn("PreviewMD-1.5-7-macOS.zip", html)
@@ -133,7 +135,7 @@ class QuietRequestHandler(landing.PreviewMDRequestHandler):
 
 
 class PreviewMDServerTests(unittest.TestCase):
-    archive_name = "PreviewMD-1.8-12-macOS.dmg"
+    archive_name = "PreviewMD-1.9-13-macOS.dmg"
 
     def setUp(self) -> None:
         self.temporary_directory = TemporaryDirectory()
@@ -213,9 +215,9 @@ class PreviewMDServerTests(unittest.TestCase):
         for file_name in (
             "PreviewMD-missing-macOS.dmg",
             "PreviewMD-missing-macOS.zip",
-            "../PreviewMD-1.8-12-macOS.dmg",
-            "../PreviewMD-1.8-12-macOS.zip",
-            "PreviewMD-1.8-12-macOS.pkg",
+            "../PreviewMD-1.9-13-macOS.dmg",
+            "../PreviewMD-1.9-13-macOS.zip",
+            "PreviewMD-1.9-13-macOS.pkg",
             "not-previewmd.zip",
         ):
             status, payload = self.post_json(
